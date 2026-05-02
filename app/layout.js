@@ -3,10 +3,6 @@ export const metadata = {
   description: 'Sistema de monitoreo hidrometeorológico',
 }
 
-export const metadata = {
-  title: 'HydroMET Mburicaó',
-  description: 'Sistema de monitoreo hidrometeorológico',
-}
 
 export default function RootLayout({ children }) {
   return (
