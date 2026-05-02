@@ -16,7 +16,7 @@ function HStatItem({ color, label, pulse }) {
         width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0,
         animation: pulse ? 'pulse 2s ease-in-out infinite' : 'none'
       }} />
-      {label}
+      <span style={{ display: 'none' }} className="md-show">{label}</span>
     </div>
   )
 }
@@ -36,7 +36,7 @@ function ClockDisplay() {
     return () => clearInterval(i)
   }, [])
   return (
-    <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 12, color: '#c8ddf5', whiteSpace: 'nowrap' }}>
+    <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 11, color: '#c8ddf5', whiteSpace: 'nowrap' }}>
       {time}
     </div>
   )
@@ -50,6 +50,27 @@ export default function Home() {
   const [lastUpdate, setLastUpdate] = useState(null)
   const [dateFrom, setDateFrom]     = useState('2025-10-01')
   const [dateTo, setDateTo]         = useState('2026-04-30')
+  const [isMobile, setIsMobile]     = useState(false)
+
+  useEffect(() => {
+    function checkMobile() {
+      setIsMobile(window.innerWidth < 768)
+    }
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const auth = localStorage.getItem('hydromet_auth')
+      if (!auth) {
+        window.location.href = '/login'
+        return
+      }
+    }
+    fetchData(dateFrom, dateTo)
+  }, [])
 
   async function fetchData(from, to) {
     const { data: stns } = await supabase
@@ -101,10 +122,6 @@ export default function Home() {
     setLoading(false)
   }
 
-  useEffect(() => {
-    fetchData(dateFrom, dateTo)
-  }, [])
-
   function handleFilter() {
     setLoading(true)
     fetchData(dateFrom, dateTo)
@@ -129,54 +146,76 @@ export default function Home() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#060c14' }}>
+
       {/* HEADER */}
       <div style={{
         background: '#0b1523',
         borderBottom: '1px solid #1d3050',
-        padding: '10px 24px',
+        padding: '10px 16px',
         display: 'flex',
         alignItems: 'center',
-        gap: 16
+        gap: 12,
+        flexWrap: 'wrap'
       }}>
-        <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 13, color: '#1de3c8', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
+        <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 12, color: '#1de3c8', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
           HydroMET<span style={{ color: '#4a6d99' }}>/</span>MBR
           <span style={{ color: '#3b9df8', marginLeft: 6 }}>v2.4</span>
         </div>
 
-        <div style={{
-          background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
-          borderRadius: 4, padding: '2px 10px',
-          fontFamily: 'Space Mono, monospace', fontSize: 10, color: '#3b9df8', letterSpacing: '0.06em'
-        }}>
-          ARROYO MBURICAÓ BASIN · PY
-        </div>
+        {!isMobile && (
+          <div style={{
+            background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
+            borderRadius: 4, padding: '2px 10px',
+            fontFamily: 'Space Mono, monospace', fontSize: 10, color: '#3b9df8', letterSpacing: '0.06em'
+          }}>
+            ARROYO MBURICAÓ BASIN · PY
+          </div>
+        )}
 
         <div style={{ flex: 1 }} />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-          <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
-          <HStatItem color="#3b9df8" label={stations.length + ' / ' + stations.length + ' STATIONS'} />
-          <HStatItem color="#1de3c8" label="SUPABASE REALTIME" pulse />
-          <HStatItem color="#ef4444" label="SISTEMA ACTIVO" pulse />
-        </div>
+        {!isMobile && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
+            <HStatItem color="#3b9df8" label={stations.length + ' / ' + stations.length + ' STATIONS'} />
+            <HStatItem color="#1de3c8" label="SUPABASE REALTIME" pulse />
+            <HStatItem color="#ef4444" label="SISTEMA ACTIVO" pulse />
+          </div>
+        )}
 
         <ClockDisplay />
+
+        <button
+          onClick={() => {
+            localStorage.removeItem('hydromet_auth')
+            window.location.href = '/login'
+          }}
+          style={{
+            background: 'transparent', border: '1px solid #1d3050',
+            borderRadius: 4, padding: '3px 10px', color: '#4a6d99',
+            fontSize: 10, fontFamily: 'Space Mono, monospace',
+            cursor: 'pointer', letterSpacing: '0.04em'
+          }}
+        >
+          SALIR
+        </button>
       </div>
 
       {/* CONTENIDO */}
-      <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ padding: isMobile ? '12px 12px' : '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         <StationCards stations={stations} latestData={latestData} records={records} />
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, alignItems: 'start' }}>
+        {/* Grid gráfico + mapa — columna única en mobile */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr' : '1fr 360px',
+          gap: 12,
+          alignItems: 'start'
+        }}>
 
           {/* Gráfico */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace', letterSpacing: '0.06em' }}>
-                
-              </div>
-            </div>
             <CombinedChart
               levelData={levelData}
               rainData={rainData}
@@ -186,35 +225,34 @@ export default function Home() {
             />
           </div>
 
-          
           {/* Mapa */}
-          <div style={{
-            background: '#0f1e30',
-            border: '1px solid #1d3050',
-            borderRadius: 12,
-            overflow: 'hidden',
-            position: 'relative',
-            zIndex: 1
-          }}>
-            {/* Título dentro del panel */}
+          <div>
             <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '12px 16px',
-              borderBottom: '1px solid #1d3050'
+              background: '#0f1e30',
+              border: '1px solid #1d3050',
+              borderRadius: 12,
+              overflow: 'hidden',
+              position: 'relative',
+              zIndex: 1
             }}>
-              <div style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace', letterSpacing: '0.06em' }}>
-                BASIN MAP — MBURICAÓ
-              </div>
               <div style={{
-                fontSize: 9, padding: '2px 8px', borderRadius: 3,
-                background: 'rgba(34,201,122,0.15)', border: '1px solid rgba(34,201,122,0.3)',
-                color: '#22c97a', fontFamily: 'Space Mono, monospace'
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '12px 16px', borderBottom: '1px solid #1d3050'
               }}>
-                LIVE
+                <div style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace', letterSpacing: '0.06em' }}>
+                  BASIN MAP — MBURICAÓ
+                </div>
+                <div style={{
+                  fontSize: 9, padding: '2px 8px', borderRadius: 3,
+                  background: 'rgba(34,201,122,0.15)', border: '1px solid rgba(34,201,122,0.3)',
+                  color: '#22c97a', fontFamily: 'Space Mono, monospace'
+                }}>
+                  LIVE
+                </div>
               </div>
-            </div>
-            <div style={{ padding: 16 }}>
-              <MapStation stations={stations} latestData={latestData} />
+              <div style={{ padding: 16 }}>
+                <MapStation stations={stations} latestData={latestData} />
+              </div>
             </div>
           </div>
 
