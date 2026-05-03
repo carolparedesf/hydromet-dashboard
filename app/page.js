@@ -58,9 +58,14 @@ export default function Home() {
     }
     checkMobile()
     window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
+    window.addEventListener('orientationchange', () => {
+      setTimeout(checkMobile, 300)
+    })
+    return () => {
+      window.removeEventListener('resize', checkMobile)
+      window.removeEventListener('orientationchange', checkMobile)
+    }
   }, [])
-
   useEffect(() => {
     fetchData(dateFrom, dateTo)
   }, [])
