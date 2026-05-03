@@ -232,7 +232,16 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
           <ResponsiveContainer width="100%" height={240}>
             <ComposedChart data={chartData} margin={{ top: 4, right: 52, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridStyle} vertical={false} />
-              <XAxis dataKey="time" tick={axisStyle} tickLine={false} axisLine={false} interval={xInterval} />
+              <XAxis 
+                dataKey="time" 
+                tick={{ fill: '#4a6d99', fontSize: 9, fontFamily: 'Space Mono, monospace' }} 
+                tickLine={false} 
+                axisLine={false} 
+                interval={Math.max(1, Math.floor(chartData.length / 4))}
+                angle={-35}
+                textAnchor="end"
+                height={45}
+              />
               {(variable === 'both' || variable === 'nivel') && (
                 <YAxis yAxisId="nivel" orientation="left" tick={axisStyle} tickLine={false} axisLine={false} width={48}
                   label={{ value: 'Nivel', angle: -90, position: 'insideLeft', fill: '#4a6d99', fontSize: 10, dx: -4 }} />
@@ -260,16 +269,7 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
           <ResponsiveContainer width="100%" height={240}>
             <ComposedChart data={dailyData} margin={{ top: 4, right: 52, left: 0, bottom: 0 }}>
               <CartesianGrid {...gridStyle} vertical={false} />
-              <XAxis 
-                dataKey="time" 
-                tick={{ fill: '#4a6d99', fontSize: 9, fontFamily: 'Space Mono, monospace' }} 
-                tickLine={false} 
-                axisLine={false} 
-                interval={Math.max(1, Math.floor(chartData.length / 4))}
-                angle={-35}
-                textAnchor="end"
-                height={45}
-              />
+              <XAxis dataKey="time" tick={{ fill: '#4a6d99', fontSize: 9, fontFamily: 'Space Mono, monospace' }} tickLine={false} axisLine={false} interval={Math.max(1, Math.floor(dailyData.length / 4))} angle={-35} textAnchor="end" height={45} />
               <YAxis yAxisId="lluvia" orientation="left" tick={axisStyle} tickLine={false} axisLine={false} width={48}
                 label={{ value: 'mm/dia', angle: -90, position: 'insideLeft', fill: '#4a6d99', fontSize: 10, dx: -4 }} />
               <YAxis yAxisId="nivel" orientation="right" tick={axisStyle} tickLine={false} axisLine={false} width={48}
