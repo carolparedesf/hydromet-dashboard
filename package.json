@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.1",
+    "amqplib": "^1.0.3",
     "date-fns": "^4.1.0",
     "leaflet": "^1.9.4",
     "next": "16.2.4",

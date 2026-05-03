@@ -3,7 +3,6 @@ export const metadata = {
   description: 'Sistema de monitoreo hidrometeorológico',
 }
 
-
 export default function RootLayout({ children }) {
   return (
     <html lang="es">
