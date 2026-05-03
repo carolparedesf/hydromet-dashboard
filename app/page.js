@@ -16,7 +16,7 @@ function HStatItem({ color, label, pulse }) {
         width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0,
         animation: pulse ? 'pulse 2s ease-in-out infinite' : 'none'
       }} />
-      <span style={{ display: 'none' }} className="md-show">{label}</span>
+      {label}
     </div>
   )
 }
@@ -161,12 +161,11 @@ export default function Home() {
         </div>
 
         {!isMobile && (
-          <div style={{
-            background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
-            borderRadius: 4, padding: '2px 10px',
-            fontFamily: 'Space Mono, monospace', fontSize: 10, color: '#3b9df8', letterSpacing: '0.06em'
-          }}>
-            ARROYO MBURICAÓ BASIN · PY
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
+            <HStatItem color="#3b9df8" label={stations.length + ' / ' + stations.length + ' STATIONS'} />
+            <HStatItem color="#1de3c8" label="SUPABASE REALTIME" pulse />
+            <HStatItem color="#ef4444" label="SISTEMA ACTIVO" pulse />
           </div>
         )}
 
