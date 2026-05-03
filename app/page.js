@@ -160,15 +160,7 @@ export default function Home() {
           <span style={{ color: '#3b9df8', marginLeft: 6 }}>v2.4</span>
         </div>
 
-        {!isMobile && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
-            <HStatItem color="#3b9df8" label={stations.length + ' / ' + stations.length + ' STATIONS'} />
-            <HStatItem color="#1de3c8" label="SUPABASE REALTIME" pulse />
-            <HStatItem color="#ef4444" label="SISTEMA ACTIVO" pulse />
-          </div>
-        )}
-
+        
         <div style={{ flex: 1 }} />
 
         {!isMobile && (
