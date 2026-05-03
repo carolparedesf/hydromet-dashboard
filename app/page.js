@@ -155,14 +155,27 @@ export default function Home() {
         gap: 12,
         flexWrap: 'wrap'
       }}>
+
+        {/* Logo */}
         <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 12, color: '#1de3c8', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
           HydroMET<span style={{ color: '#4a6d99' }}>/</span>MBR
           <span style={{ color: '#3b9df8', marginLeft: 6 }}>v2.4</span>
         </div>
 
-        
+        {/* Badge */}
+        {!isMobile && (
+          <div style={{
+            background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
+            borderRadius: 4, padding: '2px 10px',
+            fontFamily: 'Space Mono, monospace', fontSize: 10, color: '#3b9df8', letterSpacing: '0.06em'
+          }}>
+            ARROYO MBURICAÓ BASIN · PY
+          </div>
+        )}
+
         <div style={{ flex: 1 }} />
 
+        {/* Indicadores */}
         {!isMobile && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
@@ -173,6 +186,21 @@ export default function Home() {
         )}
 
         <ClockDisplay />
+
+        <button
+          onClick={() => {
+            localStorage.removeItem('hydromet_auth')
+            window.location.href = '/login'
+          }}
+          style={{
+            background: 'transparent', border: '1px solid #1d3050',
+            borderRadius: 4, padding: '3px 10px', color: '#4a6d99',
+            fontSize: 10, fontFamily: 'Space Mono, monospace',
+            cursor: 'pointer', letterSpacing: '0.04em'
+          }}
+        >
+          SALIR
+        </button>
       </div>
 
       {/* CONTENIDO */}
@@ -180,7 +208,6 @@ export default function Home() {
 
         <StationCards stations={stations} latestData={latestData} records={records} />
 
-        {/* Grid gráfico + mapa — columna única en mobile */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: isMobile ? '1fr' : '1fr 360px',
