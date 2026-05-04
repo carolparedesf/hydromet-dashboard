@@ -37,7 +37,7 @@ export default function MapStation({ stations, latestData }) {
       mapInstance.current = null
     }
 
-    import('leaflet').then(L => {
+    import('leaflet').then(async L => {
       const Lx = L.default || L
 
       if (mapRef.current._leaflet_id) {
@@ -55,21 +55,73 @@ export default function MapStation({ stations, latestData }) {
         zoomControl: true,
       })
 
-      // forzar que el mapa tome el tamaño correcto y habilite eventos
-      setTimeout(() => {
-        map.invalidateSize()
-      }, 200)
+      setTimeout(() => { map.invalidateSize() }, 200)
 
-      // Tile claro de OpenStreetMap
-       Lx.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      Lx.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
         maxZoom: 19
       }).addTo(map)
+
+      // Cargar GeoJSON de límite de cuenca
+      try {
+        const limiteRes = await fetch('/Limite_Mburicao_Victoria.geojson')
+        const limiteData = await limiteRes.json()
+        Lx.geoJSON(limiteData, {
+          style: {
+            color: '#3b9df8',
+            weight: 2.5,
+            opacity: 0.9,
+            fillColor: '#3b9df8',
+            fillOpacity: 0.06,
+            dashArray: '6 4'
+          }
+        }).addTo(map)
+      } catch(e) {
+        console.warn('No se pudo cargar límite de cuenca:', e)
+      }
+
+      // Cargar GeoJSON de subcuencas
+      try {
+        const subcuencasRes = await fetch('/Subcuencas_Mburicao_Victoria.geojson')
+        const subcuencasData = await subcuencasRes.json()
+
+        const subcuencaColors = [
+          '#1de3c8', '#f97316', '#a855f7',
+          '#eab308', '#22c55e', '#ef4444', '#3b9df8'
+        ]
+        let colorIdx = 0
+
+        Lx.geoJSON(subcuencasData, {
+          style: (feature) => {
+            const color = subcuencaColors[colorIdx % subcuencaColors.length]
+            colorIdx++
+            return {
+              color: color,
+              weight: 1.5,
+              opacity: 0.7,
+              fillColor: color,
+              fillOpacity: 0.08,
+            }
+          },
+          onEachFeature: (feature, layer) => {
+            const props = feature.properties
+            const nombre = props?.nombre || props?.name || props?.Name || props?.NOMBRE || 'Subcuenca'
+            layer.bindTooltip(nombre, {
+              permanent: false,
+              direction: 'center',
+              className: 'leaflet-tooltip-dark'
+            })
+          }
+        }).addTo(map)
+      } catch(e) {
+        console.warn('No se pudo cargar subcuencas:', e)
+      }
+
+      // Marcadores de estaciones
       stationsWithCoords.forEach(station => {
         const data  = latestData[station.id]
         const color = getColor(station)
 
-        // Ícono personalizado con letra
         const icon = Lx.divIcon({
           className: '',
           html: `
@@ -121,7 +173,7 @@ export default function MapStation({ stations, latestData }) {
 
   if (stationsWithCoords.length === 0) {
     return (
-      <div style={{ height: 260, background: '#0f1e30', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6d99', fontSize: 12 }}>
+      <div style={{ height: 420, background: '#0f1e30', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6d99', fontSize: 12 }}>
         Sin coordenadas configuradas
       </div>
     )
@@ -129,12 +181,11 @@ export default function MapStation({ stations, latestData }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-
-      {/* Mapa */}
       <div
         ref={mapRef}
-        style={{ height: 300, width: '100%', borderRadius: 10, zIndex: 0, position: 'relative' }}
+        style={{ height: 420, width: '100%', borderRadius: 10, zIndex: 0, position: 'relative' }}
       />
+
       {/* Lista de estaciones */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {stations.map(station => {
@@ -150,7 +201,6 @@ export default function MapStation({ stations, latestData }) {
               padding: '8px 10px', borderRadius: 8,
               background: '#060c14', border: '1px solid #1d3050'
             }}>
-              {/* Letra */}
               <div style={{
                 width: 26, height: 26, borderRadius: '50%',
                 background: color, display: 'flex', alignItems: 'center',
@@ -160,8 +210,6 @@ export default function MapStation({ stations, latestData }) {
               }}>
                 {station.station_code}
               </div>
-
-              {/* Nombre */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, color: '#c8ddf5', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {station.station_name}
@@ -170,8 +218,6 @@ export default function MapStation({ stations, latestData }) {
                   {status.label}
                 </div>
               </div>
-
-              {/* Valores */}
               <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
                 {hasRain && data?.precipitation_mm != null && (
                   <div style={{ textAlign: 'right' }}>
@@ -208,6 +254,14 @@ export default function MapStation({ stations, latestData }) {
             {item.label}
           </div>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: '#4a6d99' }}>
+          <div style={{ width: 16, height: 2, background: '#3b9df8', borderRadius: 1 }} />
+          Límite cuenca
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: '#4a6d99' }}>
+          <div style={{ width: 16, height: 2, background: '#1de3c8', borderRadius: 1 }} />
+          Subcuencas
+        </div>
       </div>
     </div>
   )
