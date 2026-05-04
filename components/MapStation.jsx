@@ -29,21 +29,30 @@ export default function MapStation({ stations, latestData }) {
   }
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
     if (!mapRef.current) return
     if (stationsWithCoords.length === 0) return
 
-    if (mapInstance.current) {
-      mapInstance.current.remove()
-      mapInstance.current = null
+    // --- CONTROL ANTI-DUPLICADOS ---
+    // Si ya hay un mapa, no hacemos nada (evita el error de inicialización)
+    if (mapInstance.current) return
+
+    // Limpieza de seguridad por si quedó un rastro en el DOM
+    if (mapRef.current._leaflet_id) {
+        mapRef.current._leaflet_id = null;
     }
 
+    let isMounted = true; // Guard para evitar fugas de memoria
+
     import('leaflet').then(async (L) => {
+      if (!isMounted) return;
       const Lx = L.default || L
 
-      // Calcular centro
+      // Calcular centro dinámico
       const centerLat = stationsWithCoords.reduce((a, s) => a + Number(s.latitude), 0) / stationsWithCoords.length
       const centerLon = stationsWithCoords.reduce((a, s) => a + Number(s.longitude), 0) / stationsWithCoords.length
 
+      // Crear el mapa solo si mapRef.current no tiene un mapa ya
       const map = Lx.map(mapRef.current, {
         center: [centerLat, centerLon],
         zoom: 13,
@@ -52,7 +61,9 @@ export default function MapStation({ stations, latestData }) {
         zoomControl: true,
       })
 
-      // Tile Layer (OpenStreetMap)
+      mapInstance.current = map
+
+      // Tile Layer Estándar
       Lx.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
         maxZoom: 19
@@ -60,27 +71,25 @@ export default function MapStation({ stations, latestData }) {
 
       // --- CARGA DE GEOJSON (CUENCAS) ---
       try {
-        // Cargar Limite Principal
-        const resLimite = await fetch('/Limite_Mburicao_Victoria.geojson')
-        if (resLimite.ok) {
-          const dataLimite = await resLimite.json()
-          Lx.geoJSON(dataLimite, {
-            style: { color: '#1e40af', weight: 3, fillOpacity: 0, dashArray: '5, 10' },
-            interactive: false
-          }).addTo(map)
+        const resLimite = await fetch('/Limite_Mburicao_Victoria.json'); 
+        if (resLimite.ok && isMounted) {
+          const dataLimite = await resLimite.json();
+          const layerLimite = Lx.geoJSON(dataLimite, {
+            style: { color: '#1e40af', weight: 3, fillOpacity: 0, dashArray: '5, 10' }
+          }).addTo(map);
+          
+          map.fitBounds(layerLimite.getBounds());
         }
 
-        // Cargar Subcuencas
-        const resSub = await fetch('/Subcuencas_Mburicao_Victoria.geojson')
-        if (resSub.ok) {
-          const dataSub = await resSub.json()
+        const resSub = await fetch('/Subcuencas_Mburicao_Victoria.json');
+        if (resSub.ok && isMounted) {
+          const dataSub = await resSub.json();
           Lx.geoJSON(dataSub, {
-            style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.1 },
-            interactive: false
-          }).addTo(map)
+            style: { color: '#3b82f6', weight: 1, fillOpacity: 0.1 }
+          }).addTo(map);
         }
       } catch (err) {
-        console.error("Error cargando capas GeoJSON:", err)
+        console.error("Error cargando capas GeoJSON:", err);
       }
 
       // --- RENDERIZADO DE ESTACIONES ---
@@ -126,18 +135,19 @@ export default function MapStation({ stations, latestData }) {
         `)
       })
 
-      // Forzar ajuste de tamaño
-      setTimeout(() => map.invalidateSize(), 200)
-      mapInstance.current = map
+      setTimeout(() => {
+        if (isMounted) map.invalidateSize()
+      }, 200)
     })
 
     return () => {
+      isMounted = false
       if (mapInstance.current) {
         mapInstance.current.remove()
         mapInstance.current = null
       }
     }
-  }, [stations, latestData])
+  }, []) // Dependencias vacías para inicializar el mapa solo una vez
 
   if (stationsWithCoords.length === 0) {
     return (
@@ -149,13 +159,12 @@ export default function MapStation({ stations, latestData }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Mapa */}
       <div
         ref={mapRef}
         style={{ height: 400, width: '100%', borderRadius: 10, zIndex: 0, position: 'relative', border: '1px solid #1d3050' }}
       />
       
-      {/* Lista de estaciones */}
+      {/* Lista de estaciones inferior */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {stations.map(station => {
           const data = latestData[station.id]
@@ -212,7 +221,6 @@ export default function MapStation({ stations, latestData }) {
         })}
       </div>
 
-      {/* Leyenda */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0 4px' }}>
         {[
           { color: '#22c55e', label: '< 50 cm' },
