@@ -43,14 +43,14 @@ function ClockDisplay() {
 }
 
 export default function Home() {
-  const [stations, setStations]     = useState([])
-  const [records, setRecords]       = useState([])
-  const [latestData, setLatest]     = useState({})
-  const [loading, setLoading]       = useState(true)
+  const [stations, setStations] = useState([])
+  const [records, setRecords] = useState([])
+  const [latestData, setLatest] = useState({})
+  const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const [dateFrom, setDateFrom]     = useState('2025-10-01')
-  const [dateTo, setDateTo]         = useState('2026-04-30')
-  const [isMobile, setIsMobile]     = useState(false)
+  const [dateFrom, setDateFrom] = useState('2025-08-27')
+  const [dateTo, setDateTo] = useState('2026-03-17')
+  const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
     function checkMobile() {
@@ -80,7 +80,7 @@ export default function Home() {
     setStations(stns)
 
     const fromISO = new Date(from + 'T00:00:00').toISOString()
-    const toISO   = new Date(to   + 'T23:59:59').toISOString()
+    const toISO = new Date(to + 'T23:59:59').toISOString()
 
     const allRecords = []
     for (const stn of stns) {
@@ -92,10 +92,10 @@ export default function Home() {
           .filter(row => row.bucket >= fromISO && row.bucket <= toISO)
           .forEach(row => {
             allRecords.push({
-              station_id:       stn.id,
-              timestamp:        row.bucket,
+              station_id: stn.id,
+              timestamp: row.bucket,
               precipitation_mm: row.avg_precipitation,
-              water_level_cm:   row.avg_level,
+              water_level_cm: row.avg_level,
             })
           })
       }
@@ -137,10 +137,10 @@ export default function Home() {
     stations.map(s => [s.id, records.filter(r => r.station_id === s.id)])
   )
 
-  const stationNivel  = stations.find(s => s.sensor_type === 'nivel')
+  const stationNivel = stations.find(s => s.sensor_type === 'nivel')
   const stationLluvia = stations.find(s => s.sensor_type === 'lluvia')
-  const levelData     = stationNivel  ? (recordsByStation[stationNivel.id]  || []) : []
-  const rainData      = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
+  const levelData = stationNivel ? (recordsByStation[stationNivel.id] || []) : []
+  const rainData = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
 
   return (
     <div style={{ minHeight: '100vh', background: '#060c14' }}>
