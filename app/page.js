@@ -86,7 +86,7 @@ export default function Home() {
     for (const stn of stns) {
       const { data: sampled } = await supabase
         .rpc('get_records_sampled', { p_station_id: stn.id })
-
+        .range(0, 10000)
       if (sampled) {
         sampled
           .filter(row => row.bucket >= fromISO && row.bucket <= toISO)
