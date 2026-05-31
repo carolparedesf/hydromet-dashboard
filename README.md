@@ -46,5 +46,6 @@ npm run build && npm run start
 
 ## Autora
 
-**Victoria Paredes Frutos** 
+**Victoria Paredes Frutos**<br>
+Trabajo Final de Grado<br>
 Universidad Nacional de Asunción · Paraguay · 2026
