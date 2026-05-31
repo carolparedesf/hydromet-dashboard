@@ -19,7 +19,7 @@ Next.js 14 · React · TailwindCSS · Recharts · Leaflet · Supabase · Python 
 - KPI cards con máximos y promedios del período
 - Filtros de rango de fechas
 - Análisis de correlación lluvia–nivel
-- Diseño responsive · Autenticación propia
+- Diseño responsive 
 
 ---
 
