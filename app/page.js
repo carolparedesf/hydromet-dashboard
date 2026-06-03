@@ -92,30 +92,35 @@ export default function Home() {
     const fromISO = new Date(from + 'T00:00:00.000Z').toISOString()
     const toISO   = new Date(to   + 'T23:59:59.999Z').toISOString()
 
+    console.log('Fetching desde:', fromISO, 'hasta:', toISO)
+
     const allRecords = []
     for (const stn of stns) {
-      const { data: sampled } = await supabase
+      const { data: sampled, error } = await supabase
         .rpc('get_records_sampled', { p_station_id: stn.id })
         .range(0, 9999)
         .select()
 
+      console.log(`Estación ${stn.station_code}: ${sampled?.length} registros, error:`, error)
+
       if (sampled) {
-        sampled
-          .filter(row => {
-            const t = new Date(row.bucket).getTime()
-            return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
+        const filtered = sampled.filter(row => {
+          const t = new Date(row.bucket).getTime()
+          return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
+        })
+        console.log(`Estación ${stn.station_code}: ${filtered.length} registros después del filtro`)
+        filtered.forEach(row => {
+          allRecords.push({
+            station_id:       stn.id,
+            timestamp:        row.bucket,
+            precipitation_mm: row.avg_precipitation,
+            water_level_cm:   row.avg_level,
           })
-          .forEach(row => {
-            allRecords.push({
-              station_id:       stn.id,
-              timestamp:        row.bucket,
-              precipitation_mm: row.avg_precipitation,
-              water_level_cm:   row.avg_level,
-            })
-          })
+        })
       }
     }
 
+    console.log('Total records:', allRecords.length)
     setRecords(allRecords)
 
     const latest = {}
