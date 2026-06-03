@@ -44,13 +44,12 @@ function ClockDisplay() {
 
 export default function Home() {
   const [stations, setStations] = useState([])
-  const [records, setRecords] = useState([])
+  const [records, setRecords]   = useState([])
   const [latestData, setLatest] = useState({})
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]   = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
-
   const [dateFrom, setDateFrom] = useState('2024-04-16')
-  const [dateTo, setDateTo]     = useState('2026-06-03')
+  const [dateTo, setDateTo]     = useState('2030-12-31')
   const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
@@ -67,8 +66,18 @@ export default function Home() {
       window.removeEventListener('orientationchange', checkMobile)
     }
   }, [])
+
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const auth = localStorage.getItem('hydromet_auth')
+      if (!auth) {
+        window.location.href = '/login'
+        return
+      }
+    }
     fetchData(dateFrom, dateTo)
+    const interval = setInterval(() => fetchData(dateFrom, dateTo), 60000)
+    return () => clearInterval(interval)
   }, [])
 
   async function fetchData(from, to) {
@@ -80,7 +89,6 @@ export default function Home() {
     if (!stns) return
     setStations(stns)
 
-   
     const fromISO = new Date(from + 'T00:00:00.000Z').toISOString()
     const toISO   = new Date(to   + 'T23:59:59.999Z').toISOString()
 
@@ -127,11 +135,6 @@ export default function Home() {
     setLoading(false)
   }
 
-  function handleFilter() {
-    setLoading(true)
-    fetchData(dateFrom, dateTo)
-  }
-
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#4a6d99', background: '#060c14', fontFamily: 'Space Mono, monospace', fontSize: 13 }}>
@@ -143,11 +146,11 @@ export default function Home() {
   const recordsByStation = Object.fromEntries(
     stations.map(s => [s.id, records.filter(r => r.station_id === s.id)])
   )
+
   const stationNivel  = stations.find(s => s.sensor_type === 'nivel' || s.sensor_type === 'nivel+lluvia')
   const stationLluvia = stations.find(s => s.sensor_type === 'lluvia')
   const levelData     = stationNivel  ? (recordsByStation[stationNivel.id]  || []) : []
   const rainData      = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
-
 
   return (
     <div style={{ minHeight: '100vh', background: '#060c14' }}>
@@ -163,13 +166,11 @@ export default function Home() {
         flexWrap: 'wrap'
       }}>
 
-        {/* Logo */}
         <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 12, color: '#1de3c8', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
           HydroMET<span style={{ color: '#4a6d99' }}>/</span>MBR
           <span style={{ color: '#3b9df8', marginLeft: 6 }}>v2.4</span>
         </div>
 
-        {/* Badge */}
         {!isMobile && (
           <div style={{
             background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
@@ -182,7 +183,6 @@ export default function Home() {
 
         <div style={{ flex: 1 }} />
 
-        {/* Indicadores */}
         {!isMobile && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
@@ -194,20 +194,11 @@ export default function Home() {
 
         <ClockDisplay />
 
-        <button
-          onClick={() => {
-            localStorage.removeItem('hydromet_auth')
-            window.location.href = '/login'
-          }}
-          style={{
-            background: 'transparent', border: '1px solid #1d3050',
-            borderRadius: 4, padding: '3px 10px', color: '#4a6d99',
-            fontSize: 10, fontFamily: 'Space Mono, monospace',
-            cursor: 'pointer', letterSpacing: '0.04em'
-          }}
-        >
-          SALIR
-        </button>
+        {lastUpdate && (
+          <span style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace' }}>
+            {lastUpdate.toLocaleTimeString('es-PY')}
+          </span>
+        )}
       </div>
 
       {/* CONTENIDO */}
@@ -222,7 +213,6 @@ export default function Home() {
           alignItems: 'start'
         }}>
 
-          {/* Gráfico */}
           <div>
             <CombinedChart
               levelData={levelData}
@@ -233,7 +223,6 @@ export default function Home() {
             />
           </div>
 
-          {/* Mapa */}
           <div>
             <div style={{
               background: '#0f1e30',
