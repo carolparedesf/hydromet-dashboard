@@ -48,8 +48,9 @@ export default function Home() {
   const [latestData, setLatest] = useState({})
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const [dateFrom, setDateFrom] = useState('2025-08-27')
-  const [dateTo, setDateTo] = useState('2026-05-07')
+
+  const [dateFrom, setDateFrom] = useState('2024-04-16')
+  const [dateTo, setDateTo]     = useState('2026-06-03')
   const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
