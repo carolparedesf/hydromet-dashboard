@@ -80,8 +80,9 @@ export default function Home() {
     if (!stns) return
     setStations(stns)
 
-    const fromISO = new Date(from + 'T00:00:00').toISOString()
-    const toISO = new Date(to + 'T23:59:59').toISOString()
+   
+    const fromISO = new Date(from + 'T00:00:00.000Z').toISOString()
+    const toISO   = new Date(to   + 'T23:59:59.999Z').toISOString()
 
     const allRecords = []
     for (const stn of stns) {
@@ -89,15 +90,19 @@ export default function Home() {
         .rpc('get_records_sampled', { p_station_id: stn.id })
         .range(0, 9999)
         .select()
+
       if (sampled) {
         sampled
-          .filter(row => row.bucket >= fromISO && row.bucket <= toISO)
+          .filter(row => {
+            const t = new Date(row.bucket).getTime()
+            return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
+          })
           .forEach(row => {
             allRecords.push({
-              station_id: stn.id,
-              timestamp: row.bucket,
+              station_id:       stn.id,
+              timestamp:        row.bucket,
               precipitation_mm: row.avg_precipitation,
-              water_level_cm: row.avg_level,
+              water_level_cm:   row.avg_level,
             })
           })
       }
