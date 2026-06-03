@@ -68,13 +68,6 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const auth = localStorage.getItem('hydromet_auth')
-      if (!auth) {
-        window.location.href = '/login'
-        return
-      }
-    }
     fetchData(dateFrom, dateTo)
     const interval = setInterval(() => fetchData(dateFrom, dateTo), 60000)
     return () => clearInterval(interval)
