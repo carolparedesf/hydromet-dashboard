@@ -139,10 +139,14 @@ export default function Home() {
     stations.map(s => [s.id, records.filter(r => r.station_id === s.id)])
   )
 
-  const stationNivel = stations.find(s => s.sensor_type === 'nivel')
-  const stationLluvia = stations.find(s => s.sensor_type === 'lluvia')
-  const levelData = stationNivel ? (recordsByStation[stationNivel.id] || []) : []
-  const rainData = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
+ 
+
+
+
+  const stationNivel  = stations.find(s => s.sensor_type === 'nivel' || s.sensor_type === 'nivel+lluvia')
+  const stationLluvia = stations.find(s => s.sensor_type === 'lluvia' || s.sensor_type === 'nivel+lluvia')
+  const levelData     = stationNivel  ? (recordsByStation[stationNivel.id]  || []) : []
+  const rainData      = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
 
   return (
     <div style={{ minHeight: '100vh', background: '#060c14' }}>
