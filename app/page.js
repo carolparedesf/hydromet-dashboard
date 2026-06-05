@@ -1,23 +1,100 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { POLL_INTERVAL_MS, LEVEL_THRESHOLDS } from '../lib/constants'
+import { useTheme } from '../components/ThemeProvider'
 import StationCards from '../components/StationCards'
-import CombinedChart from '../components/CombinedChart'
-import DataTable from '../components/DataTable'
 import dynamic from 'next/dynamic'
 
-const MapStation = dynamic(() => import('../components/MapStation'), { ssr: false })
+// Heavy components are code-split: their JS chunks (Recharts, date-fns, Leaflet)
+// are downloaded in parallel with Supabase queries instead of blocking first paint.
+const MapStation    = dynamic(() => import('../components/MapStation'),    { ssr: false })
+const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
+const DataTable     = dynamic(() => import('../components/DataTable'),     { ssr: false })
 
-function HStatItem({ color, label, pulse }) {
+// ─── Date range for the full data fetch (static; chart does local filtering).
+// Unified re-fetch on range change is wired in Phase 4.
+const DATE_FROM = '2024-04-16'
+const DATE_TO   = '2030-12-31'
+
+// ─── Header primitives ────────────────────────────────────────────────────────
+
+function StatusDot({ color, pulse }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#7a9dc5', fontFamily: 'Space Mono, monospace' }}>
-      <div style={{
-        width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0,
-        animation: pulse ? 'pulse 2s ease-in-out infinite' : 'none'
-      }} />
+    <span
+      aria-hidden="true"
+      style={{
+        display: 'inline-block',
+        width: 7, height: 7, borderRadius: '50%',
+        background: color, flexShrink: 0,
+        animation: pulse ? 'pulse 2s ease-in-out infinite' : 'none',
+      }}
+    />
+  )
+}
+
+function StatusChip({ color, label, pulse }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+      fontSize: 11.5, color: 'var(--ink-2, #aab8c6)',
+      letterSpacing: '0.03em', whiteSpace: 'nowrap',
+    }}>
+      <StatusDot color={color} pulse={pulse} />
       {label}
     </div>
+  )
+}
+
+function SunIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <circle cx="12" cy="12" r="5" />
+      <line x1="12" y1="1"  x2="12" y2="3"  />
+      <line x1="12" y1="21" x2="12" y2="23" />
+      <line x1="4.22"  y1="4.22"  x2="5.64"  y2="5.64"  />
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+      <line x1="1"  y1="12" x2="3"  y2="12" />
+      <line x1="21" y1="12" x2="23" y2="12" />
+      <line x1="4.22"  y1="19.78" x2="5.64"  y2="18.36" />
+      <line x1="18.36" y1="5.64"  x2="19.78" y2="4.22"  />
+    </svg>
+  )
+}
+
+function MoonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  )
+}
+
+function ThemeToggle() {
+  const { theme, toggle } = useTheme()
+  return (
+    <button
+      onClick={toggle}
+      aria-label={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
+      style={{
+        width: 28, height: 28, borderRadius: 6, cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'transparent',
+        color: 'var(--ink-3, #8090a0)',
+        border: '1px solid transparent',
+        transition: 'background 0.15s, color 0.15s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--panel-alt, rgba(255,255,255,0.08))' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+    >
+      {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+    </button>
   )
 }
 
@@ -26,237 +103,371 @@ function ClockDisplay() {
   useEffect(() => {
     function update() {
       const now = new Date()
-      setTime(
-        now.toLocaleDateString('es-PY', { day: '2-digit', month: 'short', year: 'numeric' }) +
-        ' · ' + now.toLocaleTimeString('es-PY')
-      )
+      // Mobile: short form "04 jun · 13:41"; desktop: full form with year + seconds
+      setTime({
+        full:  now.toLocaleDateString('es-PY', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + now.toLocaleTimeString('es-PY'),
+        short: now.toLocaleDateString('es-PY', { day: '2-digit', month: 'short' }) + ' · ' + now.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' }),
+      })
     }
     update()
-    const i = setInterval(update, 1000)
-    return () => clearInterval(i)
+    const id = setInterval(update, 1000)
+    return () => clearInterval(id)
   }, [])
+
   return (
-    <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 11, color: '#c8ddf5', whiteSpace: 'nowrap' }}>
-      {time}
+    <div style={{ fontFamily: 'var(--font-mono, "Space Mono", monospace)', fontSize: 12, color: 'var(--ink-2, #aab8c6)', whiteSpace: 'nowrap' }}>
+      <span className="hidden md:inline">{time.full}</span>
+      <span className="md:hidden">{time.short}</span>
     </div>
   )
 }
 
+function ErrorBanner({ message }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        background: 'var(--st-critico-soft, rgba(178,59,59,0.10))',
+        border: '1px solid var(--st-critico, #b23b3b)',
+        borderRadius: 8, padding: '10px 16px',
+        fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+        fontSize: 12, color: 'var(--st-critico, #b23b3b)',
+      }}
+    >
+      <StatusDot color="var(--st-critico, #b23b3b)" />
+      {message}
+    </div>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
 export default function Home() {
-  const [stations, setStations] = useState([])
-  const [records, setRecords]   = useState([])
-  const [latestData, setLatest] = useState({})
-  const [loading, setLoading]   = useState(true)
+  const [stations, setStations]     = useState([])
+  const [records, setRecords]       = useState([])
+  const [latestData, setLatest]     = useState({})
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const [dateFrom, setDateFrom] = useState('2024-04-16')
-  const [dateTo, setDateTo]     = useState('2030-12-31')
-  const [isMobile, setIsMobile] = useState(false)
+  const [mapVisible, setMapVisible] = useState(false)
+  const mapBodyRef = useRef(null)
 
+  // ── IntersectionObserver — defer Leaflet until map panel is near the viewport.
+  // On mobile the map is below the fold; this prevents Leaflet from blocking TBT.
   useEffect(() => {
-    function checkMobile() {
-      setIsMobile(window.innerWidth < 768)
-    }
-    checkMobile()
-    window.addEventListener('resize', checkMobile)
-    window.addEventListener('orientationchange', () => {
-      setTimeout(checkMobile, 300)
-    })
-    return () => {
-      window.removeEventListener('resize', checkMobile)
-      window.removeEventListener('orientationchange', checkMobile)
-    }
+    const el = mapBodyRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setMapVisible(true); obs.disconnect() } },
+      { rootMargin: '200px' }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
   }, [])
 
+  // ── Station list — fetched once on mount, never re-fetched on polls
   useEffect(() => {
-    fetchData(dateFrom, dateTo)
-    const interval = setInterval(() => fetchData(dateFrom, dateTo), 60000)
-    return () => clearInterval(interval)
+    async function loadStations() {
+      try {
+        const { data, error: err } = await supabase
+          .from('stations')
+          .select('id, station_code, station_name, sensor_type, latitude, longitude')
+          .order('station_code')
+        if (err || !data) throw err ?? new Error('no data')
+        setStations(data)
+      } catch {
+        setError('No se pudieron cargar las estaciones.')
+        setLoading(false)
+      }
+    }
+    loadStations()
   }, [])
 
-  async function fetchData(from, to) {
-    const { data: stns } = await supabase
-      .from('stations')
-      .select('*')
-      .order('station_code')
+  // ── Records — polled every 60 s once stations are ready
+  useEffect(() => {
+    if (!stations.length) return
 
-    if (!stns) return
-    setStations(stns)
+    const fromISO = new Date(DATE_FROM + 'T00:00:00.000Z').toISOString()
+    const toISO   = new Date(DATE_TO   + 'T23:59:59.999Z').toISOString()
 
-    const fromISO = new Date(from + 'T00:00:00.000Z').toISOString()
-    const toISO   = new Date(to   + 'T23:59:59.999Z').toISOString()
+    async function loadRecords() {
+      try {
+        setError(null)
 
-    console.log('Fetching desde:', fromISO, 'hasta:', toISO)
+        // Sampled records — all RPC calls in parallel instead of sequential
+        const rpcResults = await Promise.all(
+          stations.map(stn =>
+            supabase
+              .rpc('get_records_sampled', { p_station_id: stn.id })
+              .range(0, 9999)
+              .select()
+          )
+        )
 
-    const allRecords = []
-    for (const stn of stns) {
-      const { data: sampled, error } = await supabase
-        .rpc('get_records_sampled', { p_station_id: stn.id })
-        .range(0, 9999)
-        .select()
-
-      console.log(`Estación ${stn.station_code}: ${sampled?.length} registros, error:`, error)
-
-      if (sampled) {
-        const filtered = sampled.filter(row => {
-          const t = new Date(row.bucket).getTime()
-          return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
+        const allRecords = []
+        rpcResults.forEach(({ data: sampled }, i) => {
+          if (!sampled) return
+          const stn = stations[i]
+          sampled
+            .filter(row => {
+              const t = new Date(row.bucket).getTime()
+              return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
+            })
+            .forEach(row => allRecords.push({
+              station_id:       stn.id,
+              timestamp:        row.bucket,
+              precipitation_mm: row.avg_precipitation,
+              water_level_cm:   row.avg_level,
+            }))
         })
-        console.log(`Estación ${stn.station_code}: ${filtered.length} registros después del filtro`)
-        filtered.forEach(row => {
-          allRecords.push({
-            station_id:       stn.id,
-            timestamp:        row.bucket,
-            precipitation_mm: row.avg_precipitation,
-            water_level_cm:   row.avg_level,
-          })
+        setRecords(allRecords)
+
+        // Latest per station — all queries in parallel (was N sequential queries)
+        const latestResults = await Promise.all(
+          stations.map(stn =>
+            supabase
+              .from('hydromet_records')
+              .select('station_id, timestamp, water_level_cm, precipitation_mm')
+              .eq('station_id', stn.id)
+              .order('timestamp', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+          )
+        )
+
+        const latest = {}
+        stations.forEach((stn, i) => {
+          if (latestResults[i].data) latest[stn.id] = latestResults[i].data
         })
+        setLatest(latest)
+        setLastUpdate(new Date())
+      } catch {
+        setError('No se pudieron actualizar los datos — reintentando en 60 s')
+      } finally {
+        setLoading(false)
       }
     }
 
-    console.log('Total records:', allRecords.length)
-    setRecords(allRecords)
+    loadRecords()
+    const interval = setInterval(loadRecords, POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [stations]) // stations is set once; this effect runs exactly once when data arrives
 
-    const latest = {}
-    for (const stn of stns) {
-      const { data: last } = await supabase
-        .from('hydromet_records')
-        .select('*')
-        .eq('station_id', stn.id)
-        .order('timestamp', { ascending: false })
-        .limit(1)
-        .single()
-      if (last) latest[stn.id] = last
+  // ── Derived data — all memoized so they don't recompute on the 60 s lastUpdate tick
+  // recordsByStation: O(n) single-pass group-by instead of O(stations × records)
+  const recordsByStation = useMemo(() => {
+    const map = {}
+    for (const r of records) {
+      if (!map[r.station_id]) map[r.station_id] = []
+      map[r.station_id].push(r)
     }
+    return map
+  }, [records])
 
-    setLatest(latest)
-    setLastUpdate(new Date())
-    setLoading(false)
-  }
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#4a6d99', background: '#060c14', fontFamily: 'Space Mono, monospace', fontSize: 13 }}>
-        Cargando datos...
-      </div>
-    )
-  }
-
-  const recordsByStation = Object.fromEntries(
-    stations.map(s => [s.id, records.filter(r => r.station_id === s.id)])
+  const stationNivel  = useMemo(
+    () => stations.find(s => s.sensor_type === 'nivel' || s.sensor_type === 'nivel+lluvia'),
+    [stations]
   )
-
-  const stationNivel  = stations.find(s => s.sensor_type === 'nivel' || s.sensor_type === 'nivel+lluvia')
-  const stationLluvia = stations.find(s => s.sensor_type === 'lluvia')
-  const levelData     = stationNivel  ? (recordsByStation[stationNivel.id]  || []) : []
-  const rainData      = stationLluvia ? (recordsByStation[stationLluvia.id] || []) : []
+  const stationLluvia = useMemo(
+    () => stations.find(s => s.sensor_type === 'lluvia'),
+    [stations]
+  )
+  const levelData = useMemo(
+    () => stationNivel  ? (recordsByStation[stationNivel.id]  || []) : [],
+    [stationNivel, recordsByStation]
+  )
+  const rainData = useMemo(
+    () => stationLluvia ? (recordsByStation[stationLluvia.id] || []) : [],
+    [stationLluvia, recordsByStation]
+  )
+  const isCritical = useMemo(
+    () => Object.values(latestData).some(d => (d?.water_level_cm ?? 0) >= LEVEL_THRESHOLDS.CRITICO),
+    [latestData]
+  )
+  // Reversed once per records update — avoids a new array on every render
+  const reversedRecords = useMemo(() => [...records].reverse(), [records])
 
   return (
-    <div style={{ minHeight: '100vh', background: '#060c14' }}>
+    <div className="min-h-screen">
+      <h1 className="sr-only">Panel HydroMET — Cuenca Mburicaó</h1>
 
-      {/* HEADER */}
-      <div style={{
-        background: '#0b1523',
-        borderBottom: '1px solid #1d3050',
-        padding: '10px 16px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        flexWrap: 'wrap'
+      {/* ── HEADER ─────────────────────────────────────────────────────────── */}
+      <header style={{
+        background: 'var(--panel)',
+        borderBottom: '1px solid var(--border)',
+        boxShadow: 'var(--shadow-panel)',
       }}>
+        <div className="flex items-center flex-wrap gap-[14px]
+                        px-[14px] md:px-[18px] xl:px-[22px]
+                        py-3 md:py-[13px] xl:py-[15px]">
 
-        <div style={{ fontFamily: 'Space Mono, monospace', fontSize: 12, color: '#1de3c8', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
-          HydroMET<span style={{ color: '#4a6d99' }}>/</span>MBR
-          <span style={{ color: '#3b9df8', marginLeft: 6 }}>v2.4</span>
-        </div>
-
-        {!isMobile && (
-          <div style={{
-            background: 'rgba(61,157,248,0.1)', border: '1px solid rgba(61,157,248,0.25)',
-            borderRadius: 4, padding: '2px 10px',
-            fontFamily: 'Space Mono, monospace', fontSize: 10, color: '#3b9df8', letterSpacing: '0.06em'
-          }}>
-            ARROYO MBURICAÓ BASIN · PY
-          </div>
-        )}
-
-        <div style={{ flex: 1 }} />
-
-        {!isMobile && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <HStatItem color="#22c97a" label="INGEST ACTIVE" pulse />
-            <HStatItem color="#3b9df8" label={stations.length + ' / ' + stations.length + ' STATIONS'} />
-            <HStatItem color="#1de3c8" label="SUPABASE REALTIME" pulse />
-            <HStatItem color="#ef4444" label="SISTEMA ACTIVO" pulse />
-          </div>
-        )}
-
-        <ClockDisplay />
-
-        {lastUpdate && (
-          <span style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace' }}>
-            {lastUpdate.toLocaleTimeString('es-PY')}
-          </span>
-        )}
-      </div>
-
-      {/* CONTENIDO */}
-      <div style={{ padding: isMobile ? '12px 12px' : '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-
-        <StationCards stations={stations} latestData={latestData} records={records} />
-
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : '1fr 360px',
-          gap: 12,
-          alignItems: 'start'
-        }}>
-
-          <div>
-            <CombinedChart
-              levelData={levelData}
-              rainData={rainData}
-              stationLevel={stationNivel?.station_name || ''}
-              stationRain={stationLluvia?.station_name || ''}
-              stations={stations}
-            />
-          </div>
-
-          <div>
-            <div style={{
-              background: '#0f1e30',
-              border: '1px solid #1d3050',
-              borderRadius: 12,
-              overflow: 'hidden',
-              position: 'relative',
-              zIndex: 1
-            }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 16px', borderBottom: '1px solid #1d3050'
+          {/* Left: wordmark + basin badge */}
+          <div className="flex items-center gap-3">
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{
+                fontFamily: 'var(--font-display, "Space Mono", monospace)',
+                fontWeight: 700, fontSize: 18,
+                color: 'var(--ink, #c8ddf5)', letterSpacing: '-0.3px',
               }}>
-                <div style={{ fontSize: 10, color: '#4a6d99', fontFamily: 'Space Mono, monospace', letterSpacing: '0.06em' }}>
-                  BASIN MAP — MBURICAÓ
-                </div>
-                <div style={{
-                  fontSize: 9, padding: '2px 8px', borderRadius: 3,
-                  background: 'rgba(34,201,122,0.15)', border: '1px solid rgba(34,201,122,0.3)',
-                  color: '#22c97a', fontFamily: 'Space Mono, monospace'
-                }}>
-                  LIVE
-                </div>
+                HydroMET
+              </span>
+              <span style={{
+                fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+                fontWeight: 500, fontSize: 13,
+                color: 'var(--accent, #3b9df8)', letterSpacing: '0.5px',
+              }}>
+                MBR
+              </span>
+            </div>
+
+            {/* Basin badge — tablet and up */}
+            <div className="hidden md:block" style={{
+              background: 'var(--panel-alt, rgba(61,157,248,0.08))',
+              border: '1px solid var(--border, rgba(61,157,248,0.25))',
+              borderRadius: 5, padding: '5px 9px',
+              fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+              fontSize: 11, color: 'var(--ink-2, #7a9dc5)',
+              letterSpacing: '0.04em', whiteSpace: 'nowrap',
+            }}>
+              CUENCA ARROYO MBURICAÓ · PY
+            </div>
+
+            {/* Compact basin label — mobile only */}
+            <span className="md:hidden" style={{
+              fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+              fontSize: 10, color: 'var(--ink-3, #6c7a8b)', letterSpacing: '0.04em',
+            }}>
+              · MBURICAÓ
+            </span>
+          </div>
+
+          <div className="flex-1" />
+
+          {/* Right: chips + theme toggle + clock */}
+          <div className="flex items-center gap-4 flex-wrap">
+
+            {/* Chip 1: always visible */}
+            <StatusChip
+              color="var(--st-normal)"
+              label="INGESTA ACTIVA"
+            />
+
+            {/* Chips 2–4: tablet and up */}
+            <div className="hidden md:flex items-center gap-4">
+              <StatusChip
+                color="var(--st-normal, #22c97a)"
+                label={`${stations.length} / ${stations.length} ESTACIONES`}
+              />
+              <StatusChip
+                color="var(--ink-4, #5f6f7e)"
+                label="SONDEO · 60 s"
+              />
+              <StatusChip
+                color={isCritical ? 'var(--st-critico, #ef4444)' : 'var(--st-normal, #22c97a)'}
+                label="SISTEMA OPERATIVO"
+                pulse={isCritical}
+              />
+            </div>
+
+            <ThemeToggle />
+
+            {/* Divider + clock */}
+            <div className="flex items-center gap-3">
+              <div aria-hidden="true" style={{ width: 1, height: 16, background: 'var(--border, #1d3050)', flexShrink: 0 }} />
+              <ClockDisplay />
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* ── PAGE CONTENT ───────────────────────────────────────────────────── */}
+      <div className="flex flex-col
+                      gap-3 md:gap-[14px] xl:gap-4
+                      px-[14px] md:px-[16px] xl:px-[24px]
+                      py-3 md:py-[14px] xl:py-5">
+
+        {error && <ErrorBanner message={error} />}
+
+        {/* KPI cards — skeleton placeholders reserve height until data arrives */}
+        <section aria-label="Indicadores" aria-live="polite" aria-atomic="false">
+          {loading
+            ? (
+              <div className="kpi-grid">
+                <div className="skel" style={{ height: 116, borderRadius: 8 }} />
+                <div className="skel" style={{ height: 116, borderRadius: 8 }} />
+                <div className="skel" style={{ height: 116, borderRadius: 8 }} />
               </div>
-              <div style={{ padding: 16 }}>
-                <MapStation stations={stations} latestData={latestData} />
+            )
+            : <StationCards stations={stations} latestData={latestData} records={records} />
+          }
+        </section>
+
+        {/* Analysis panel + Basin map */}
+        <main className="main-grid">
+
+          {loading
+            ? <div className="skel" style={{ minHeight: 460, borderRadius: 8 }} />
+            : (
+              <CombinedChart
+                levelData={levelData}
+                rainData={rainData}
+                stationLevel={stationNivel?.station_name || ''}
+                stationRain={stationLluvia?.station_name || ''}
+                stations={stations}
+              />
+            )
+          }
+
+          {/* Map panel — wrapper kept from existing design; Phase 5 redesigns it */}
+          <div style={{
+            background: 'var(--panel)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            overflow: 'hidden',
+            position: 'relative',
+            zIndex: 1,
+            boxShadow: 'var(--shadow-panel)',
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px', borderBottom: '1px solid var(--border)',
+            }}>
+              <h2 style={{
+                margin: 0, fontSize: 11, fontWeight: 600,
+                fontFamily: 'var(--font-display, "IBM Plex Sans", sans-serif)',
+                color: 'var(--ink-2)', letterSpacing: '0.06em', textTransform: 'uppercase',
+              }}>
+                Mapa de cuenca — Mburicaó
+              </h2>
+              <div style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                background: 'var(--st-normal-soft)', border: '1px solid var(--st-normal)',
+                color: 'var(--st-normal)', fontFamily: 'var(--font-mono, "Space Mono", monospace)',
+                letterSpacing: '0.03em',
+              }}>
+                {lastUpdate
+                  ? 'ACTUALIZADO ' + lastUpdate.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' })
+                  : 'LIVE'}
               </div>
+            </div>
+            <div ref={mapBodyRef} style={{ padding: 16 }}>
+              {mapVisible && stations.length > 0
+                ? <MapStation stations={stations} latestData={latestData} />
+                : <div className="skel" style={{ height: 230, borderRadius: 6 }} />
+              }
             </div>
           </div>
 
-        </div>
+        </main>
 
-        <DataTable
-          records={[...records].reverse().slice(0, 100)}
-          stations={stations}
-        />
+        {/* Records table — skeleton while loading */}
+        <section aria-label="Registros recientes">
+          {loading
+            ? <div className="skel" style={{ minHeight: 280, borderRadius: 8 }} />
+            : <DataTable records={reversedRecords} stations={stations} />
+          }
+        </section>
 
       </div>
     </div>

@@ -2,39 +2,215 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Design Tokens ─────────────────────────────────────────────────────────
+   Light values in :root. Dark overrides in .dark (toggled by ThemeProvider).
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+  /* surfaces */
+  --app:              #eef1f5;
+  --panel:            #ffffff;
+  --panel-alt:        #f7f9fb;
+  /* borders */
+  --border:           #dce2ea;
+  --border-strong:    #c6cfdb;
+  /* typography */
+  --ink:              #16202b;
+  --ink-2:            #475565;
+  --ink-3:            #6c7a8b;
+  --ink-4:            #93a0af;
+  /* accent / data series */
+  --accent:           #1c54a8;
+  --accent-soft:      rgba(28, 84, 168, 0.12);
+  --accent-border:    rgba(28, 84, 168, 0.28);
+  --level:            #1c54a8;
+  --rain:             #3f8fb0;
+  /* status colours */
+  --st-normal:        #1f8a55;
+  --st-atencion:      #b07d00;
+  --st-alerta:        #c1631c;
+  --st-critico:       #b23b3b;
+  /* status soft backgrounds */
+  --st-normal-soft:   rgba(31, 138, 85,  0.10);
+  --st-atencion-soft: rgba(176, 125, 0,  0.10);
+  --st-alerta-soft:   rgba(193, 99,  28, 0.10);
+  --st-critico-soft:  rgba(178, 59,  59, 0.10);
+  /* ui chrome */
+  --grid:             rgba(220, 226, 234, 0.60);
+  --track:            #dce2ea;
+  --focus-ring:       #1c54a8;
+  --shadow-panel:     0 1px 3px rgba(22, 32, 43, 0.07), 0 1px 2px rgba(22, 32, 43, 0.04);
+  /* date picker icon — no inversion needed on light bg */
+  --date-picker-filter: invert(0) opacity(0.55);
+}
+
+.dark {
+  color-scheme: dark;
+  /* surfaces */
+  --app:              #0d141c;
+  --panel:            #141d27;
+  --panel-alt:        #18222e;
+  /* borders */
+  --border:           #26323f;
+  --border-strong:    #36444f;
+  /* typography */
+  --ink:              #e8eef4;
+  --ink-2:            #aab8c6;
+  --ink-3:            #8090a0;
+  --ink-4:            #5f6f7e;
+  /* accent / data series */
+  --accent:           #5b9bff;
+  --accent-soft:      rgba(91, 155, 255, 0.15);
+  --accent-border:    rgba(91, 155, 255, 0.30);
+  --level:            #5b9bff;
+  --rain:             #5cb6d6;
+  /* status colours */
+  --st-normal:        #36a86b;
+  --st-atencion:      #d2a02c;
+  --st-alerta:        #df8a3e;
+  --st-critico:       #d75c5c;
+  /* status soft backgrounds */
+  --st-normal-soft:   rgba(54,  168, 107, 0.15);
+  --st-atencion-soft: rgba(210, 160, 44,  0.15);
+  --st-alerta-soft:   rgba(223, 138, 62,  0.15);
+  --st-critico-soft:  rgba(215, 92,  92,  0.15);
+  /* ui chrome */
+  --grid:             rgba(38, 50, 63, 0.80);
+  --track:            #26323f;
+  --focus-ring:       #5b9bff;
+  --shadow-panel:     0 1px 4px rgba(0, 0, 0, 0.30);
+  /* date picker icon — invert to white on dark bg */
+  --date-picker-filter: invert(1) opacity(0.40);
+}
+
+/* ─── Tailwind v4 theme mapping (inline = runtime CSS-var resolution) ───── */
+
+@theme inline {
+  /* colour utilities */
+  --color-app:           var(--app);
+  --color-panel:         var(--panel);
+  --color-panel-alt:     var(--panel-alt);
+  --color-border:        var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink:           var(--ink);
+  --color-ink-2:         var(--ink-2);
+  --color-ink-3:         var(--ink-3);
+  --color-ink-4:         var(--ink-4);
+  --color-accent:        var(--accent);
+  --color-level:         var(--level);
+  --color-rain:          var(--rain);
+  --color-normal:        var(--st-normal);
+  --color-atencion:      var(--st-atencion);
+  --color-alerta:        var(--st-alerta);
+  --color-critico:       var(--st-critico);
+  /* font-family utilities */
+  --font-family-sans:    var(--font-sans,    Inter, system-ui, sans-serif);
+  --font-family-display: var(--font-display, 'IBM Plex Sans', Inter, system-ui, sans-serif);
+  --font-family-mono:    var(--font-mono,    'IBM Plex Mono', 'Space Mono', monospace);
+}
+
+/* ─── Base layer ─────────────────────────────────────────────────────────── */
+
 @layer base {
   *, *::before, *::after {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
     border: 0;
-    outline: none;
+    /* outline: none removed — keyboard focus rings handled by :focus-visible below */
   }
 
   html, body {
-    background: #060c14;
-    color: #c8ddf5;
-    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--app);
+    color: var(--ink);
+    font-family: var(--font-sans, 'Inter', system-ui, sans-serif);
     font-size: 14px;
     width: 100%;
     min-height: 100vh;
   }
 }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: #060c14; }
-::-webkit-scrollbar-thumb { background: #1d3050; border-radius: 2px; }
+/* ─── Focus rings (WCAG 2.4.7) ──────────────────────────────────────────── */
 
-.panel {
-  background: #0f1e30;
-  border: 1px solid #1d3050;
-  border-radius: 12px;
+:where(a, button, [role="tab"], input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
+/* ─── Reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Scrollbars ─────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--app); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+
+/* ─── Layout classes — defined here to bypass Tailwind v4 scanner ────────── */
+/* Tailwind v4 auto-source-detection starts from the CSS file directory       */
+/* (app/). Classes used only in components/ may not be scanned. Defining      */
+/* layout rules here guarantees they are always compiled.                     */
+
+/* Chart wrapper — explicit pixel heights so Recharts ResizeObserver always
+   measures a real dimension, even before CSS custom properties are resolved. */
+.chart-wrapper {
+  min-width: 0;
+  height: 260px;
+}
+@media (min-width: 768px)  { .chart-wrapper { height: 320px; } }
+@media (min-width: 1280px) { .chart-wrapper { height: 372px; } }
+
+/* KPI cards: 1-col mobile → 3-col md+ */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 768px) {
+  .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1280px) {
+  .kpi-grid { gap: 16px; }
+}
+
+/* Main content: 1-col mobile/tablet → [1fr 380px] desktop */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: start;
+}
+@media (min-width: 1280px) {
+  .main-grid {
+    grid-template-columns: 1fr 380px;
+    gap: 16px;
+  }
+}
+
+/* ─── Shared panel class (used by DataTable and any ad-hoc panels) ───────── */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-panel);
+}
+
+/* ─── Date inputs ────────────────────────────────────────────────────────── */
+
 input[type="date"] {
-  background: #0f1e30;
-  border: 1px solid #1d3050;
-  color: #c8ddf5;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--ink);
   border-radius: 6px;
   padding: 6px 10px;
   font-size: 13px;
@@ -43,13 +219,86 @@ input[type="date"] {
 }
 
 input[type="date"]:focus {
-  border-color: #3b9df8;
+  border-color: var(--accent);
 }
 
 input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(1) opacity(0.4);
+  filter: var(--date-picker-filter);
   cursor: pointer;
 }
+
+/* ─── Leaflet popup theming ─────────────────────────────────────────────── */
+/* Overrides Leaflet's default white bubble so popups match the active theme */
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--panel) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-panel) !important;
+}
+
+/* ─── Leaflet control theming ────────────────────────────────────────────── */
+/* Zoom buttons and scale bar inherit the active theme's panel colors. */
+
+.leaflet-control-zoom {
+  border-color: var(--border) !important;
+  box-shadow: var(--shadow-panel) !important;
+}
+.leaflet-control-zoom a {
+  background: var(--panel) !important;
+  color: var(--ink) !important;
+  border-color: var(--border) !important;
+}
+.leaflet-control-zoom a:hover {
+  background: var(--panel-alt) !important;
+  color: var(--ink) !important;
+}
+.leaflet-control-scale-line {
+  background: var(--panel) !important;
+  color: var(--ink-3) !important;
+  border-color: var(--border-strong) !important;
+  font-family: var(--font-mono, 'Space Mono', monospace) !important;
+  font-size: 9px !important;
+  border-bottom-width: 2px !important;
+}
+
+/* ─── Leaflet tooltip theming ─────────────────────────────────────────────── */
+
+.leaflet-tooltip {
+  background: var(--panel) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-panel) !important;
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+}
+.leaflet-tooltip-top::before {
+  border-top-color: var(--border) !important;
+}
+.leaflet-tooltip-bottom::before {
+  border-bottom-color: var(--border) !important;
+}
+.leaflet-tooltip-left::before {
+  border-left-color: var(--border) !important;
+}
+.leaflet-tooltip-right::before {
+  border-right-color: var(--border) !important;
+}
+
+/* ─── Skeleton loading placeholders ─────────────────────────────────────── */
+
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.skel {
+  background: var(--panel-alt);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* ─── Animations ─────────────────────────────────────────────────────────── */
 
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
