@@ -7,18 +7,12 @@ import { useTheme } from '../components/ThemeProvider'
 import StationCards from '../components/StationCards'
 import dynamic from 'next/dynamic'
 
-// Heavy components are code-split: their JS chunks (Recharts, date-fns, Leaflet)
-// are downloaded in parallel with Supabase queries instead of blocking first paint.
 const MapStation    = dynamic(() => import('../components/MapStation'),    { ssr: false })
 const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
 const DataTable     = dynamic(() => import('../components/DataTable'),     { ssr: false })
 
-// ─── Date range for the full data fetch (static; chart does local filtering).
-// Unified re-fetch on range change is wired in Phase 4.
 const DATE_FROM = '2024-04-16'
 const DATE_TO   = '2030-12-31'
-
-// ─── Header primitives ────────────────────────────────────────────────────────
 
 function StatusDot({ color, pulse }) {
   return (
@@ -103,7 +97,6 @@ function ClockDisplay() {
   useEffect(() => {
     function update() {
       const now = new Date()
-      // Mobile: short form "04 jun · 13:41"; desktop: full form with year + seconds
       setTime({
         full:  now.toLocaleDateString('es-PY', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + now.toLocaleTimeString('es-PY'),
         short: now.toLocaleDateString('es-PY', { day: '2-digit', month: 'short' }) + ' · ' + now.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' }),
@@ -141,8 +134,6 @@ function ErrorBanner({ message }) {
   )
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
-
 export default function Home() {
   const [stations, setStations]     = useState([])
   const [records, setRecords]       = useState([])
@@ -153,8 +144,6 @@ export default function Home() {
   const [mapVisible, setMapVisible] = useState(false)
   const mapBodyRef = useRef(null)
 
-  // ── IntersectionObserver — defer Leaflet until map panel is near the viewport.
-  // On mobile the map is below the fold; this prevents Leaflet from blocking TBT.
   useEffect(() => {
     const el = mapBodyRef.current
     if (!el) return
@@ -166,7 +155,6 @@ export default function Home() {
     return () => obs.disconnect()
   }, [])
 
-  // ── Station list — fetched once on mount, never re-fetched on polls
   useEffect(() => {
     async function loadStations() {
       try {
@@ -184,7 +172,6 @@ export default function Home() {
     loadStations()
   }, [])
 
-  // ── Records — polled every 60 s once stations are ready
   useEffect(() => {
     if (!stations.length) return
 
@@ -195,13 +182,14 @@ export default function Home() {
       try {
         setError(null)
 
-        // Sampled records — all RPC calls in parallel instead of sequential
         const rpcResults = await Promise.all(
           stations.map(stn =>
             supabase
-              .rpc('get_records_sampled', { p_station_id: stn.id })
-              .range(0, 9999)
-              .select()
+              .rpc('get_records_sampled', {
+                p_station_id: stn.id,
+                p_from: fromISO,
+                p_to: toISO
+              })
           )
         )
 
@@ -209,21 +197,15 @@ export default function Home() {
         rpcResults.forEach(({ data: sampled }, i) => {
           if (!sampled) return
           const stn = stations[i]
-          sampled
-            .filter(row => {
-              const t = new Date(row.bucket).getTime()
-              return t >= new Date(fromISO).getTime() && t <= new Date(toISO).getTime()
-            })
-            .forEach(row => allRecords.push({
-              station_id:       stn.id,
-              timestamp:        row.bucket,
-              precipitation_mm: row.avg_precipitation,
-              water_level_cm:   row.avg_level,
-            }))
+          sampled.forEach(row => allRecords.push({
+            station_id:       stn.id,
+            timestamp:        row.bucket,
+            precipitation_mm: row.avg_precipitation,
+            water_level_cm:   row.avg_level,
+          }))
         })
         setRecords(allRecords)
 
-        // Latest per station — all queries in parallel (was N sequential queries)
         const latestResults = await Promise.all(
           stations.map(stn =>
             supabase
@@ -252,10 +234,8 @@ export default function Home() {
     loadRecords()
     const interval = setInterval(loadRecords, POLL_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [stations]) // stations is set once; this effect runs exactly once when data arrives
+  }, [stations])
 
-  // ── Derived data — all memoized so they don't recompute on the 60 s lastUpdate tick
-  // recordsByStation: O(n) single-pass group-by instead of O(stations × records)
   const recordsByStation = useMemo(() => {
     const map = {}
     for (const r of records) {
@@ -285,24 +265,19 @@ export default function Home() {
     () => Object.values(latestData).some(d => (d?.water_level_cm ?? 0) >= LEVEL_THRESHOLDS.CRITICO),
     [latestData]
   )
-  // Reversed once per records update — avoids a new array on every render
   const reversedRecords = useMemo(() => [...records].reverse(), [records])
 
   return (
     <div className="min-h-screen">
       <h1 className="sr-only">Panel HydroMET — Cuenca Mburicaó</h1>
 
-      {/* ── HEADER ─────────────────────────────────────────────────────────── */}
       <header style={{
         background: 'var(--panel)',
         borderBottom: '1px solid var(--border)',
         boxShadow: 'var(--shadow-panel)',
       }}>
-        <div className="flex items-center flex-wrap gap-[14px]
-                        px-[14px] md:px-[18px] xl:px-[22px]
-                        py-3 md:py-[13px] xl:py-[15px]">
+        <div className="flex items-center flex-wrap gap-[14px] px-[14px] md:px-[18px] xl:px-[22px] py-3 md:py-[13px] xl:py-[15px]">
 
-          {/* Left: wordmark + basin badge */}
           <div className="flex items-center gap-3">
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
               <span style={{
@@ -321,7 +296,6 @@ export default function Home() {
               </span>
             </div>
 
-            {/* Basin badge — tablet and up */}
             <div className="hidden md:block" style={{
               background: 'var(--panel-alt, rgba(61,157,248,0.08))',
               border: '1px solid var(--border, rgba(61,157,248,0.25))',
@@ -333,7 +307,6 @@ export default function Home() {
               CUENCA ARROYO MBURICAÓ · PY
             </div>
 
-            {/* Compact basin label — mobile only */}
             <span className="md:hidden" style={{
               fontFamily: 'var(--font-mono, "Space Mono", monospace)',
               fontSize: 10, color: 'var(--ink-3, #6c7a8b)', letterSpacing: '0.04em',
@@ -344,35 +317,21 @@ export default function Home() {
 
           <div className="flex-1" />
 
-          {/* Right: chips + theme toggle + clock */}
           <div className="flex items-center gap-4 flex-wrap">
-
-            {/* Chip 1: always visible */}
-            <StatusChip
-              color="var(--st-normal)"
-              label="INGESTA ACTIVA"
-            />
-
-            {/* Chips 2–4: tablet and up */}
+            <StatusChip color="var(--st-normal)" label="INGESTA ACTIVA" />
             <div className="hidden md:flex items-center gap-4">
               <StatusChip
                 color="var(--st-normal, #22c97a)"
                 label={`${stations.length} / ${stations.length} ESTACIONES`}
               />
-              <StatusChip
-                color="var(--ink-4, #5f6f7e)"
-                label="SONDEO · 60 s"
-              />
+              <StatusChip color="var(--ink-4, #5f6f7e)" label="SONDEO · 60 s" />
               <StatusChip
                 color={isCritical ? 'var(--st-critico, #ef4444)' : 'var(--st-normal, #22c97a)'}
                 label="SISTEMA OPERATIVO"
                 pulse={isCritical}
               />
             </div>
-
             <ThemeToggle />
-
-            {/* Divider + clock */}
             <div className="flex items-center gap-3">
               <div aria-hidden="true" style={{ width: 1, height: 16, background: 'var(--border, #1d3050)', flexShrink: 0 }} />
               <ClockDisplay />
@@ -381,15 +340,10 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ── PAGE CONTENT ───────────────────────────────────────────────────── */}
-      <div className="flex flex-col
-                      gap-3 md:gap-[14px] xl:gap-4
-                      px-[14px] md:px-[16px] xl:px-[24px]
-                      py-3 md:py-[14px] xl:py-5">
+      <div className="flex flex-col gap-3 md:gap-[14px] xl:gap-4 px-[14px] md:px-[16px] xl:px-[24px] py-3 md:py-[14px] xl:py-5">
 
         {error && <ErrorBanner message={error} />}
 
-        {/* KPI cards — skeleton placeholders reserve height until data arrives */}
         <section aria-label="Indicadores" aria-live="polite" aria-atomic="false">
           {loading
             ? (
@@ -403,9 +357,7 @@ export default function Home() {
           }
         </section>
 
-        {/* Analysis panel + Basin map */}
         <main className="main-grid">
-
           {loading
             ? <div className="skel" style={{ minHeight: 460, borderRadius: 8 }} />
             : (
@@ -419,7 +371,6 @@ export default function Home() {
             )
           }
 
-          {/* Map panel — wrapper kept from existing design; Phase 5 redesigns it */}
           <div style={{
             background: 'var(--panel)',
             border: '1px solid var(--border)',
@@ -458,10 +409,8 @@ export default function Home() {
               }
             </div>
           </div>
-
         </main>
 
-        {/* Records table — skeleton while loading */}
         <section aria-label="Registros recientes">
           {loading
             ? <div className="skel" style={{ minHeight: 280, borderRadius: 8 }} />
