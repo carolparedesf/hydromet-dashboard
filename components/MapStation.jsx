@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import { supabase } from '../lib/supabase'
 
 const MONO = 'var(--font-mono, "Space Mono", monospace)'
 
@@ -206,7 +207,7 @@ export default function MapStation({ stations, latestData }) {
           </div>
         `, { direction: 'top', offset: [0, -20], opacity: 0.97 })
 
-        // Click popup
+        // Click popup — fetches latest photo from media_records on open
         const levelLine  = data?.water_level_cm   != null
           ? `<div style="margin-bottom:3px">Nivel: <strong style="color:var(--level)">${Number(data.water_level_cm).toFixed(2)} cm</strong></div>` : ''
         const rainLine   = data?.precipitation_mm != null
@@ -215,12 +216,71 @@ export default function MapStation({ stations, latestData }) {
         const timeLine   = data?.timestamp
           ? `<div style="color:var(--ink-4);font-size:10px;margin-top:6px">${new Date(data.timestamp).toLocaleString('es-PY')}</div>` : ''
 
-        marker.bindPopup(`
-          <div style="font-size:12px;min-width:160px;font-family:system-ui;color:var(--ink)">
-            <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--ink)">${station.station_name}</div>
-            ${levelLine}${rainLine}${statusLine}${timeLine}
-          </div>
-        `)
+        // Shared station header used across all popup states
+        const stationHeader = `
+          <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--ink)">${station.station_name}</div>
+          ${levelLine}${rainLine}${statusLine}${timeLine}
+        `
+        const wrapPopup = (inner) =>
+          `<div style="font-size:12px;min-width:180px;font-family:system-ui;color:var(--ink)">${stationHeader}${inner}</div>`
+
+        const popup = Lx.popup({ maxWidth: 240, minWidth: 180 })
+          .setContent(wrapPopup(
+            `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
+          ))
+        marker.bindPopup(popup)
+
+        marker.on('popupopen', async () => {
+          // Reset to loading state each open
+          popup.setContent(wrapPopup(
+            `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
+          ))
+          popup.update()
+
+          try {
+            const { data: mediaRow, error: mediaErr } = await supabase
+              .from('media_records')
+              .select('file_url, timestamp, media_type')
+              .eq('station_id', station.id)
+              .order('timestamp', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+
+            if (mediaErr || !mediaRow) {
+              popup.setContent(wrapPopup(
+                `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center">Sin imagen disponible</div>`
+              ))
+              popup.update()
+              return
+            }
+
+            // Support both full URLs and storage-relative paths
+            const imgUrl = mediaRow.file_url.startsWith('http')
+              ? mediaRow.file_url
+              : supabase.storage.from('hydromet-media').getPublicUrl(mediaRow.file_url).data.publicUrl
+
+            const photoTs = `<div style="color:var(--ink-4);font-size:9px;margin-top:3px;text-align:right">${new Date(mediaRow.timestamp).toLocaleString('es-PY')}</div>`
+
+            popup.setContent(wrapPopup(`
+              <div style="margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
+                <img
+                  src="${imgUrl}"
+                  alt="Foto ${station.station_name}"
+                  style="width:100%;height:auto;max-height:140px;object-fit:cover;display:block"
+                  onerror="this.outerHTML='<div style=&quot;font-size:10px;color:var(--ink-4);text-align:center;padding:6px&quot;>Sin imagen disponible</div>'"
+                />
+              </div>
+              ${photoTs}
+            `))
+            popup.update()
+
+          } catch {
+            popup.setContent(wrapPopup(
+              `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center">Error al cargar imagen</div>`
+            ))
+            popup.update()
+          }
+        })
       })
 
       // Theme observer: swaps basemap tile layer and restyles GeoJSON polygons
