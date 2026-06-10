@@ -255,9 +255,10 @@ export default function MapStation({ stations, latestData }) {
             }
 
             // Support both full URLs and storage-relative paths
-            const imgUrl = mediaRow.file_url.startsWith('http')
+            const imgUrl = (mediaRow.file_url.startsWith('http')
               ? mediaRow.file_url
               : supabase.storage.from('hydromet-media').getPublicUrl(mediaRow.file_url).data.publicUrl
+            ) + `?t=${Date.now()}`
 
             const photoTs = `<div style="color:var(--ink-4);font-size:9px;margin-top:3px;text-align:right">${new Date(mediaRow.timestamp).toLocaleString('es-PY')}</div>`
 
