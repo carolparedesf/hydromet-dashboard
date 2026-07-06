@@ -1,14 +1,25 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
 import { statusForLevel, STATUS_LABEL } from '../lib/constants'
 
 const MONO    = 'var(--font-mono, "Space Mono", monospace)'
 const DISPLAY = 'var(--font-display, "IBM Plex Sans", sans-serif)'
 const SANS    = 'var(--font-sans, Inter, system-ui, sans-serif)'
 const PAGE_SIZE = 25
+
+// Renders the stored UTC instant as-is (dd/MM/yyyy HH:mm), bypassing the
+// browser's local timezone conversion — timestamps are recorded in UTC and
+// must display as UTC, not shifted to the viewer's local offset.
+function formatUTC(iso) {
+  const d = new Date(iso)
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const yyyy = d.getUTCFullYear()
+  const hh = String(d.getUTCHours()).padStart(2, '0')
+  const min = String(d.getUTCMinutes()).padStart(2, '0')
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}`
+}
 
 // ─── Inline StatusPill (mirrors StationCards version, self-contained here) ──
 
@@ -169,7 +180,7 @@ export default function DataTable({ records, stations }) {
                     color: 'var(--ink-3)', fontFamily: MONO, fontSize: 12.5,
                     fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
                   }}>
-                    {format(new Date(r.timestamp), 'dd/MM/yyyy HH:mm', { locale: es })}
+                    {formatUTC(r.timestamp)}
                   </td>
 
                   {/* ESTACIÓN */}
