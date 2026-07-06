@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import {
   Line, Bar, ScatterChart, Scatter, ComposedChart,
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
   Legend, ResponsiveContainer,
 } from 'recharts'
-import { format, subDays } from 'date-fns'
+import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 
 const MONO    = 'var(--font-mono, "Space Mono", monospace)'
@@ -100,25 +100,18 @@ const COMPARISON_COLORS = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function CombinedChart({ levelData, rainData, stationLevel, stationRain, stations }) {
+export default function CombinedChart({
+  levelData, rainData, stationLevel, stationRain, stations,
+  rangeKey, customFrom, customTo,
+  onRangeChange, onCustomFromChange, onCustomToChange,
+}) {
   const [activeTab, setActiveTab] = useState('timeseries')
   const [variable, setVariable]   = useState('both')
-
-  // Clean filter state: explicit string enum replaces the old null / undefined tri-state
-  // 'all' | '7d' | '14d' | '30d' | '60d' | 'custom'
-  const [rangeKey, setRangeKey]     = useState('all')
-  const [customFrom, setCustomFrom] = useState('')
-  const [customTo, setCustomTo]     = useState('')
 
   // Ref array for roving tabIndex focus management
   const tabRefs = useRef([])
 
   // ── Event handlers ──────────────────────────────────────────────────────────
-
-  const handleRangeChange = useCallback((key) => {
-    setRangeKey(key)
-    if (key !== 'custom') { setCustomFrom(''); setCustomTo('') }
-  }, [])
 
   // ARIA tabs pattern: left/right arrow keys cycle focus and activate tabs
   const handleTabKey = useCallback((e, idx) => {
@@ -135,23 +128,11 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
     }
   }, [])
 
-  // ── Data filtering ──────────────────────────────────────────────────────────
-
-  function filterData(data) {
-    if (rangeKey === 'all') return data
-    if (rangeKey === 'custom') {
-      if (!customFrom) return data
-      const from = new Date(customFrom + 'T00:00:00').toISOString()
-      const to   = customTo ? new Date(customTo + 'T23:59:59').toISOString() : new Date().toISOString()
-      return data.filter(r => r.timestamp >= from && r.timestamp <= to)
-    }
-    const days = parseInt(rangeKey)
-    const from = subDays(new Date(), days).toISOString()
-    return data.filter(r => r.timestamp >= from)
-  }
-
-  const filteredLevel = useMemo(() => filterData(levelData), [levelData, rangeKey, customFrom, customTo])
-  const filteredRain  = useMemo(() => filterData(rainData),  [rainData,  rangeKey, customFrom, customTo])
+  // levelData/rainData already come from page.js scoped to the selected range
+  // (get_records_sampled is re-queried with p_from/p_to per rangeKey), so no
+  // client-side date filtering is needed here.
+  const filteredLevel = levelData
+  const filteredRain  = rainData
 
   // ── Chart data memos (logic unchanged from previous implementation) ─────────
 
@@ -302,7 +283,7 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
           <select
             id="chart-period-select"
             value={rangeKey}
-            onChange={e => handleRangeChange(e.target.value)}
+            onChange={e => onRangeChange(e.target.value)}
             style={SELECT_STYLE}
           >
             {RANGE_PRESETS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
@@ -363,7 +344,7 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
             id="chart-date-from"
             type="date"
             value={customFrom}
-            onChange={e => setCustomFrom(e.target.value)}
+            onChange={e => onCustomFromChange(e.target.value)}
             style={INPUT_STYLE}
           />
           <span style={{ fontSize: 10, color: 'var(--ink-3)', fontFamily: MONO }}>→</span>
@@ -372,7 +353,7 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
             id="chart-date-to"
             type="date"
             value={customTo}
-            onChange={e => setCustomTo(e.target.value)}
+            onChange={e => onCustomToChange(e.target.value)}
             style={INPUT_STYLE}
           />
         </div>

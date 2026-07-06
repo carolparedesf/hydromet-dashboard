@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { subDays } from 'date-fns'
 import { supabase } from '../lib/supabase'
 import { POLL_INTERVAL_MS, LEVEL_THRESHOLDS } from '../lib/constants'
 import { useTheme } from '../components/ThemeProvider'
@@ -144,6 +145,20 @@ export default function Home() {
   const [mapVisible, setMapVisible] = useState(false)
   const mapBodyRef = useRef(null)
 
+  // Range selection lives here (not in CombinedChart) so that changing it
+  // re-queries get_records_sampled with a narrower p_from/p_to — a fixed
+  // 2024-2030 window sampled down to ~5-6k points has almost no resolution
+  // left inside a 7-day slice, so client-side-only filtering starved short
+  // ranges down to a handful of points.
+  const [rangeKey, setRangeKey]     = useState('all')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo]     = useState('')
+
+  const handleRangeChange = useCallback((key) => {
+    setRangeKey(key)
+    if (key !== 'custom') { setCustomFrom(''); setCustomTo('') }
+  }, [])
+
   useEffect(() => {
     const el = mapBodyRef.current
     if (!el) return
@@ -172,11 +187,26 @@ export default function Home() {
     loadStations()
   }, [])
 
+  // Derives the query window the RPC should sample over from the selected
+  // preset, so narrow ranges get fetched (and thus sampled) at their own
+  // resolution instead of being sliced out of one whole-history sample.
+  const { fromISO, toISO } = useMemo(() => {
+    const fullFrom = new Date(DATE_FROM + 'T00:00:00.000Z').toISOString()
+    const fullTo   = new Date(DATE_TO   + 'T23:59:59.999Z').toISOString()
+    if (rangeKey === 'all') return { fromISO: fullFrom, toISO: fullTo }
+    if (rangeKey === 'custom') {
+      if (!customFrom) return { fromISO: fullFrom, toISO: fullTo }
+      return {
+        fromISO: new Date(customFrom + 'T00:00:00').toISOString(),
+        toISO:   customTo ? new Date(customTo + 'T23:59:59').toISOString() : new Date().toISOString(),
+      }
+    }
+    const days = parseInt(rangeKey)
+    return { fromISO: subDays(new Date(), days).toISOString(), toISO: new Date().toISOString() }
+  }, [rangeKey, customFrom, customTo])
+
   useEffect(() => {
     if (!stations.length) return
-
-    const fromISO = new Date(DATE_FROM + 'T00:00:00.000Z').toISOString()
-    const toISO   = new Date(DATE_TO   + 'T23:59:59.999Z').toISOString()
 
     async function loadRecords() {
       try {
@@ -234,7 +264,7 @@ export default function Home() {
     loadRecords()
     const interval = setInterval(loadRecords, POLL_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [stations])
+  }, [stations, fromISO, toISO])
 
   const recordsByStation = useMemo(() => {
     const map = {}
@@ -367,6 +397,12 @@ export default function Home() {
                 stationLevel={stationNivel?.station_name || ''}
                 stationRain={stationLluvia?.station_name || ''}
                 stations={stations}
+                rangeKey={rangeKey}
+                customFrom={customFrom}
+                customTo={customTo}
+                onRangeChange={handleRangeChange}
+                onCustomFromChange={setCustomFrom}
+                onCustomToChange={setCustomTo}
               />
             )
           }
