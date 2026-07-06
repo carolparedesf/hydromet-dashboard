@@ -156,40 +156,49 @@ export default function CombinedChart({ levelData, rainData, stationLevel, stati
   // ── Chart data memos (logic unchanged from previous implementation) ─────────
 
   const chartData = useMemo(() => {
+    // Se agrupa por el timestamp ISO crudo (único y ordenable cronológicamente),
+    // no por la etiqueta formateada 'dd/MM HH:mm': esa etiqueta no lleva año, así que
+    // ordenarla con .sort() da orden alfabético por día-de-mes, no orden temporal,
+    // y el muestreo por step descartaba el dato más reciente de forma arbitraria.
     const levelMap = {}
-    filteredLevel.forEach(r => {
-      const key = format(new Date(r.timestamp), 'dd/MM HH:mm', { locale: es })
-      levelMap[key] = r.water_level_cm
-    })
+    filteredLevel.forEach(r => { levelMap[r.timestamp] = r.water_level_cm })
     const rainMap = {}
-    filteredRain.forEach(r => {
-      const key = format(new Date(r.timestamp), 'dd/MM HH:mm', { locale: es })
-      rainMap[key] = r.precipitation_mm
-    })
+    filteredRain.forEach(r => { rainMap[r.timestamp] = r.precipitation_mm })
     const allKeys = Array.from(new Set([...Object.keys(levelMap), ...Object.keys(rainMap)])).sort()
     let keys = allKeys
     if (allKeys.length > 600) {
       const step = Math.ceil(allKeys.length / 600)
       keys = allKeys.filter((_, i) => i % step === 0)
+      const last = allKeys[allKeys.length - 1]
+      if (keys[keys.length - 1] !== last) keys.push(last)
     }
-    return keys.map(k => ({ time: k, nivel: levelMap[k] ?? null, lluvia: rainMap[k] ?? null }))
+    return keys.map(k => ({
+      time: format(new Date(k), 'dd/MM HH:mm', { locale: es }),
+      nivel: levelMap[k] ?? null,
+      lluvia: rainMap[k] ?? null,
+    }))
   }, [filteredLevel, filteredRain])
 
   const dailyData = useMemo(() => {
     if (activeTab !== 'daily') return []
+    // Key de agrupacion 'yyyy-MM-dd' (con año): ordena cronologicamente con .sort()
+    // y evita que el mismo dia/mes de años distintos se sumen en la misma barra.
+    // 'time' guarda la etiqueta a mostrar, separada del key de agrupacion/orden.
     const byDay = {}
     filteredRain.forEach(r => {
-      const day = format(new Date(r.timestamp), 'dd/MM', { locale: es })
-      if (!byDay[day]) byDay[day] = { time: day, lluvia: 0, nivel: null }
-      if (r.precipitation_mm != null) byDay[day].lluvia += Number(r.precipitation_mm)
+      const d = new Date(r.timestamp)
+      const key = format(d, 'yyyy-MM-dd')
+      if (!byDay[key]) byDay[key] = { time: format(d, 'dd/MM/yy', { locale: es }), lluvia: 0, nivel: null }
+      if (r.precipitation_mm != null) byDay[key].lluvia += Number(r.precipitation_mm)
     })
     filteredLevel.forEach(r => {
-      const day = format(new Date(r.timestamp), 'dd/MM', { locale: es })
-      if (!byDay[day]) byDay[day] = { time: day, lluvia: 0, nivel: null }
+      const d = new Date(r.timestamp)
+      const key = format(d, 'yyyy-MM-dd')
+      if (!byDay[key]) byDay[key] = { time: format(d, 'dd/MM/yy', { locale: es }), lluvia: 0, nivel: null }
       if (r.water_level_cm != null)
-        byDay[day].nivel = Math.max(byDay[day].nivel || 0, Number(r.water_level_cm))
+        byDay[key].nivel = Math.max(byDay[key].nivel || 0, Number(r.water_level_cm))
     })
-    return Object.values(byDay).sort((a, b) => a.time.localeCompare(b.time))
+    return Object.keys(byDay).sort().map(key => byDay[key])
   }, [activeTab, filteredLevel, filteredRain])
 
   const scatterData = useMemo(() => {
