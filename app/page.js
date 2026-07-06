@@ -15,6 +15,11 @@ const DataTable     = dynamic(() => import('../components/DataTable'),     { ssr
 const DATE_FROM = '2024-04-16'
 const DATE_TO   = '2030-12-31'
 
+// Rows per station fetched raw (unaggregated) for the "Registros recientes"
+// table, so new inserts show up immediately instead of waiting for
+// get_records_sampled's hourly bucket to close.
+const RECENT_LIMIT = 30
+
 function StatusDot({ color, pulse }) {
   return (
     <span
@@ -138,6 +143,7 @@ function ErrorBanner({ message }) {
 export default function Home() {
   const [stations, setStations]     = useState([])
   const [records, setRecords]       = useState([])
+  const [recentRecords, setRecentRecords] = useState([])
   const [latestData, setLatest]     = useState({})
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState(null)
@@ -253,6 +259,22 @@ export default function Home() {
           if (latestResults[i].data) latest[stn.id] = latestResults[i].data
         })
         setLatest(latest)
+
+        const recentResults = await Promise.all(
+          stations.map(stn =>
+            supabase
+              .from('hydromet_records')
+              .select('station_id, timestamp, water_level_cm, precipitation_mm')
+              .eq('station_id', stn.id)
+              .order('timestamp', { ascending: false })
+              .limit(RECENT_LIMIT)
+          )
+        )
+        const recent = recentResults
+          .flatMap(({ data }) => data || [])
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        setRecentRecords(recent)
+
         setLastUpdate(new Date())
       } catch {
         setError('No se pudieron actualizar los datos — reintentando en 60 s')
@@ -295,7 +317,6 @@ export default function Home() {
     () => Object.values(latestData).some(d => (d?.water_level_cm ?? 0) >= LEVEL_THRESHOLDS.CRITICO),
     [latestData]
   )
-  const reversedRecords = useMemo(() => [...records].reverse(), [records])
 
   return (
     <div className="min-h-screen">
@@ -450,7 +471,7 @@ export default function Home() {
         <section aria-label="Registros recientes">
           {loading
             ? <div className="skel" style={{ minHeight: 280, borderRadius: 8 }} />
-            : <DataTable records={reversedRecords} stations={stations} />
+            : <DataTable records={recentRecords} stations={stations} />
           }
         </section>
 
