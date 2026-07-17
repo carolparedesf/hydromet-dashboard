@@ -5,20 +5,27 @@ import { supabase } from '../lib/supabase'
 
 const MONO = 'var(--font-mono, "Space Mono", monospace)'
 
+const EMPTY_CAM_MODAL = {
+  open: false, loading: false, url: null, error: null,
+  code: '', name: '', level: null, rain: null,
+  statusLabel: '', statusColor: '', dataTimestamp: null,
+}
+
 export default function MapStation({ stations, latestData }) {
   const mapRef      = useRef(null)
   const mapInstance = useRef(null)
 
   const stationsWithCoords = stations.filter(s => s.latitude && s.longitude)
 
-  // Fullscreen lightbox for the camera feed — lives outside Leaflet's popup
-  // entirely, because the popup sits inside a map container with
-  // overflow:hidden and a fixed height, which clipped a large photo no
-  // matter how the popup's own sizing was tuned.
-  const [camModal, setCamModal] = useState({ open: false, loading: false, url: null, timestamp: null, error: null, station: '' })
+  // Fullscreen lightbox for the camera feed — replaces the Leaflet popup for
+  // Estación A entirely (rather than living inside it), because the popup
+  // sits inside a map container with overflow:hidden and a fixed height,
+  // which clipped a large photo no matter how the popup's own sizing was
+  // tuned.
+  const [camModal, setCamModal] = useState(EMPTY_CAM_MODAL)
 
-  const openCameraModal = useCallback(async (stationName) => {
-    setCamModal({ open: true, loading: true, url: null, timestamp: null, error: null, station: stationName })
+  const openCameraModal = useCallback(async (info) => {
+    setCamModal({ ...EMPTY_CAM_MODAL, ...info, open: true, loading: true })
     try {
       const res = await fetch(`/api/last-image?t=${Date.now()}`, { cache: 'no-store' })
       if (!res.ok) {
@@ -26,18 +33,17 @@ export default function MapStation({ stations, latestData }) {
         throw new Error(body.error || 'Sin imagen disponible')
       }
       const blob = await res.blob()
-      const ts   = res.headers.get('X-Photo-Timestamp')
       const url  = URL.createObjectURL(blob)
-      setCamModal({ open: true, loading: false, url, timestamp: ts, error: null, station: stationName })
+      setCamModal(prev => (prev.open ? { ...prev, loading: false, url, error: null } : prev))
     } catch (err) {
-      setCamModal({ open: true, loading: false, url: null, timestamp: null, error: err.message || 'Sin imagen disponible', station: stationName })
+      setCamModal(prev => (prev.open ? { ...prev, loading: false, error: err.message || 'Sin imagen disponible' } : prev))
     }
   }, [])
 
   const closeCameraModal = useCallback(() => {
     setCamModal(prev => {
       if (prev.url) URL.revokeObjectURL(prev.url)
-      return { open: false, loading: false, url: null, timestamp: null, error: null, station: '' }
+      return EMPTY_CAM_MODAL
     })
   }, [])
 
@@ -255,8 +261,32 @@ export default function MapStation({ stations, latestData }) {
           </div>
         `, { direction: 'top', offset: [0, -20], opacity: 0.97 })
 
-        // Click popup — shows level/rain/status; non-camera stations also
-        // fetch their latest photo from media_records on open
+        // Estación A (nivel+lluvia) has a live camera feed at /api/last-image
+        // instead of a media_records row. Its click behavior no longer uses
+        // a Leaflet popup at all — the popup sits inside a map container
+        // with overflow:hidden and a fixed (short, mobile) height, so a
+        // large photo always ended up clipped no matter how the popup's
+        // own sizing/autoPan was tuned. A plain marker click now opens the
+        // fullscreen lightbox (camModal) directly.
+        const isCameraStation = station.sensor_type === 'nivel+lluvia'
+
+        if (isCameraStation) {
+          marker.on('click', () => {
+            openCameraModal({
+              code:          station.station_code,
+              name:          station.station_name,
+              level:         data?.water_level_cm,
+              rain:          data?.precipitation_mm,
+              statusLabel:   status.label,
+              statusColor,
+              dataTimestamp: data?.timestamp ?? null,
+            })
+          })
+          return
+        }
+
+        // Click popup — shows level/rain/status, and fetches the latest
+        // photo from media_records on open
         const levelLine  = data?.water_level_cm   != null
           ? `<div style="margin-bottom:3px">Nivel: <strong style="color:var(--level)">${Number(data.water_level_cm).toFixed(2)} cm</strong></div>` : ''
         const rainLine   = data?.precipitation_mm != null
@@ -295,41 +325,7 @@ export default function MapStation({ stations, latestData }) {
           ))
         marker.bindPopup(popup)
 
-        // Estación A (nivel+lluvia) has a live camera feed at /api/last-image
-        // instead of a media_records row — the other stations only ever get
-        // photos uploaded into media_records. The photo itself no longer
-        // lives inside the popup (see camModal) — the popup just gets a
-        // button that opens the fullscreen lightbox.
-        const isCameraStation = station.sensor_type === 'nivel+lluvia'
-
-        if (isCameraStation) {
-          popup.setContent(wrapPopup(`
-            <button type="button" class="cam-open-btn" style="
-              margin-top:8px;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
-              padding:8px 10px;border-radius:6px;border:1px solid var(--border);
-              background:var(--panel-alt, rgba(61,157,248,0.08));color:var(--accent, #3b9df8);
-              font-size:11px;font-weight:600;font-family:system-ui;cursor:pointer;
-            ">📷 Ver foto de la cámara</button>
-          `))
-        }
-
         marker.on('popupopen', async () => {
-          if (isCameraStation) {
-            // Content is static (no fetch here) — attach the button's click
-            // handler once; dataset.bound guards against double-binding
-            // since the popup's DOM node is reused across open/close cycles.
-            const el  = popup.getElement()
-            const btn = el?.querySelector('.cam-open-btn')
-            if (btn && !btn.dataset.bound) {
-              btn.dataset.bound = '1'
-              btn.addEventListener('click', (e) => {
-                e.stopPropagation()
-                openCameraModal(station.station_name)
-              })
-            }
-            return
-          }
-
           // Reset to loading state each open
           popup.setContent(wrapPopup(
             `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
@@ -541,16 +537,18 @@ export default function MapStation({ stations, latestData }) {
       </div>
 
       {/* Camera lightbox — fixed overlay above the whole page, not clipped by
-          the map container's overflow:hidden like the old in-popup image was. */}
+          the map container's overflow:hidden like the old in-popup image was.
+          Fixed dark palette by design (not theme tokens) — matches the
+          Design doc's "1a — Modal centrado con overlay" treatment. */}
       {camModal.open && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={`Foto ${camModal.station || 'cámara'}`}
+          aria-label={`Foto Estación ${camModal.code}`}
           onClick={closeCameraModal}
           style={{
             position: 'fixed', inset: 0, zIndex: 9999,
-            background: 'rgba(0,0,0,0.75)',
+            background: 'rgba(4,6,8,0.72)', backdropFilter: 'blur(2px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: 16,
           }}
@@ -558,65 +556,148 @@ export default function MapStation({ stations, latestData }) {
           <div
             onClick={e => e.stopPropagation()}
             style={{
-              position: 'relative',
-              maxWidth: 'min(90vw, 720px)', maxHeight: '90vh',
-              background: 'var(--panel)', borderRadius: 10, overflow: 'hidden',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              width: 340, maxWidth: '92vw',
+              background: '#12161c',
+              border: '1px solid rgba(79,195,224,0.25)',
+              borderRadius: 10, overflow: 'hidden',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.6)',
             }}
           >
-            <button
-              type="button"
-              onClick={closeCameraModal}
-              aria-label="Cerrar"
-              style={{
-                position: 'absolute', top: 8, right: 8, zIndex: 1,
-                width: 32, height: 32, borderRadius: '50%',
-                background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none',
-                cursor: 'pointer', fontSize: 18, lineHeight: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >
-              ✕
-            </button>
-
-            {camModal.loading && (
-              <div style={{
-                width: '80vw', maxWidth: 500, height: 300,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: 'var(--ink-3)', fontSize: 13, fontFamily: 'system-ui',
-              }}>
-                Cargando imagen…
+            {/* Header */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.06)',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontFamily: 'var(--font-display, "Space Grotesk", sans-serif)',
+                  fontWeight: 600, fontSize: 13, color: '#e8ecf0', whiteSpace: 'nowrap',
+                }}>
+                  ESTACIÓN {camModal.code}
+                </div>
+                <div style={{
+                  fontFamily: 'var(--font-display, "Space Grotesk", sans-serif)',
+                  fontWeight: 400, fontSize: 10.5, color: 'rgba(232,236,240,0.45)', whiteSpace: 'nowrap',
+                }}>
+                  {camModal.name}
+                </div>
               </div>
-            )}
+              <button
+                type="button"
+                onClick={closeCameraModal}
+                aria-label="Cerrar"
+                style={{
+                  cursor: 'pointer', width: 24, height: 24, flexShrink: 0, border: 'none',
+                  borderRadius: 6, background: 'rgba(255,255,255,0.06)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'rgba(232,236,240,0.6)', fontSize: 14, fontWeight: 600,
+                }}
+              >
+                ×
+              </button>
+            </div>
 
-            {camModal.error && !camModal.loading && (
+            {/* Photo — 640×480 aspect ratio, live badge overlaid top-left */}
+            <div style={{
+              width: '100%', aspectRatio: '640 / 480', position: 'relative',
+              overflow: 'hidden',
+              background: camModal.url && !camModal.loading && !camModal.error
+                ? '#000'
+                : 'repeating-linear-gradient(135deg,#1a2530,#1a2530 10px,#141a20 10px,#141a20 20px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
               <div style={{
-                width: '80vw', maxWidth: 500, height: 300, padding: 20,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: 'var(--st-critico, #ef4444)', fontSize: 13,
-                fontFamily: 'system-ui', textAlign: 'center',
+                position: 'absolute', top: 8, left: 8, zIndex: 1,
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: 'rgba(0,0,0,0.5)', padding: '3px 7px', borderRadius: 4,
               }}>
-                {camModal.error}
+                <div style={{
+                  width: 6, height: 6, borderRadius: '50%', background: '#ff5a5a',
+                  animation: 'pulse 2s ease-in-out infinite',
+                }} />
+                <span style={{
+                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+                  fontWeight: 600, fontSize: 9, color: '#fff', letterSpacing: '0.05em',
+                }}>
+                  EN VIVO · CÁM-01
+                </span>
               </div>
-            )}
 
-            {camModal.url && !camModal.loading && !camModal.error && (
-              <>
+              {camModal.loading && (
+                <span style={{
+                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+                  fontWeight: 500, fontSize: 11, color: '#5a7a8a', textAlign: 'center', padding: '0 20px',
+                }}>
+                  Cargando imagen…
+                </span>
+              )}
+
+              {camModal.error && !camModal.loading && (
+                <span style={{
+                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+                  fontWeight: 500, fontSize: 11, color: '#e08a8a', textAlign: 'center', padding: '0 20px',
+                }}>
+                  {camModal.error}
+                </span>
+              )}
+
+              {camModal.url && !camModal.loading && !camModal.error && (
                 <img
                   src={camModal.url}
-                  alt={`Última foto de la cámara — ${camModal.station}`}
-                  style={{ display: 'block', width: '100%', maxWidth: '80vw', maxHeight: '80vh', objectFit: 'contain' }}
+                  alt={`Cámara Estación ${camModal.code} — ${camModal.name}`}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                 />
-                {camModal.timestamp && (
+              )}
+            </div>
+
+            {/* Footer — status, nivel/lluvia, timestamp */}
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: camModal.statusColor || '#5fd68a' }} />
+                <span style={{
+                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+                  fontWeight: 600, fontSize: 10, color: camModal.statusColor || '#5fd68a', letterSpacing: '0.05em',
+                }}>
+                  {camModal.statusLabel}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: 16 }}>
+                <div>
                   <div style={{
-                    padding: '8px 12px', fontSize: 12, color: 'var(--ink-3)',
-                    textAlign: 'center', background: 'var(--panel)', fontFamily: MONO,
+                    fontFamily: 'var(--font-display, "Space Grotesk", sans-serif)',
+                    fontWeight: 400, fontSize: 10, color: 'rgba(232,236,240,0.45)', letterSpacing: '0.04em',
                   }}>
-                    {new Date(camModal.timestamp).toLocaleString('es-PY')}
+                    NIVEL
                   </div>
-                )}
-              </>
-            )}
+                  <div style={{ fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)', fontWeight: 600, fontSize: 22, color: '#9fd8e8' }}>
+                    {camModal.level != null ? Number(camModal.level).toFixed(2) : '—'}
+                    <span style={{ fontSize: 13, color: 'rgba(232,236,240,0.4)' }}> cm</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{
+                    fontFamily: 'var(--font-display, "Space Grotesk", sans-serif)',
+                    fontWeight: 400, fontSize: 10, color: 'rgba(232,236,240,0.45)', letterSpacing: '0.04em',
+                  }}>
+                    LLUVIA
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)', fontWeight: 600, fontSize: 22, color: '#e8ecf0' }}>
+                    {camModal.rain != null ? Number(camModal.rain).toFixed(1) : '—'}
+                    <span style={{ fontSize: 13, color: 'rgba(232,236,240,0.4)' }}> mm</span>
+                  </div>
+                </div>
+              </div>
+
+              {camModal.dataTimestamp && (
+                <div style={{
+                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+                  fontWeight: 400, fontSize: 10.5, color: 'rgba(232,236,240,0.35)',
+                }}>
+                  {new Date(camModal.dataTimestamp).toLocaleString('es-PY')}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
