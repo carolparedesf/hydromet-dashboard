@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
 const MONO = 'var(--font-mono, "Space Mono", monospace)'
@@ -10,6 +10,54 @@ export default function MapStation({ stations, latestData }) {
   const mapInstance = useRef(null)
 
   const stationsWithCoords = stations.filter(s => s.latitude && s.longitude)
+
+  // Fullscreen lightbox for the camera feed — lives outside Leaflet's popup
+  // entirely, because the popup sits inside a map container with
+  // overflow:hidden and a fixed height, which clipped a large photo no
+  // matter how the popup's own sizing was tuned.
+  const [camModal, setCamModal] = useState({ open: false, loading: false, url: null, timestamp: null, error: null, station: '' })
+
+  const openCameraModal = useCallback(async (stationName) => {
+    setCamModal({ open: true, loading: true, url: null, timestamp: null, error: null, station: stationName })
+    try {
+      const res = await fetch(`/api/last-image?t=${Date.now()}`, { cache: 'no-store' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Sin imagen disponible')
+      }
+      const blob = await res.blob()
+      const ts   = res.headers.get('X-Photo-Timestamp')
+      const url  = URL.createObjectURL(blob)
+      setCamModal({ open: true, loading: false, url, timestamp: ts, error: null, station: stationName })
+    } catch (err) {
+      setCamModal({ open: true, loading: false, url: null, timestamp: null, error: err.message || 'Sin imagen disponible', station: stationName })
+    }
+  }, [])
+
+  const closeCameraModal = useCallback(() => {
+    setCamModal(prev => {
+      if (prev.url) URL.revokeObjectURL(prev.url)
+      return { open: false, loading: false, url: null, timestamp: null, error: null, station: '' }
+    })
+  }, [])
+
+  // Close on Escape while the modal is open
+  useEffect(() => {
+    if (!camModal.open) return
+    function onKeyDown(e) { if (e.key === 'Escape') closeCameraModal() }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [camModal.open, closeCameraModal])
+
+  // Revoke the blob URL on unmount if the modal was left open
+  useEffect(() => {
+    return () => {
+      setCamModal(prev => {
+        if (prev.url) URL.revokeObjectURL(prev.url)
+        return prev
+      })
+    }
+  }, [])
 
   // Inject Leaflet CSS once on first mount — moved here from layout.js so it is
   // no longer a render-blocking CDN resource in <head>.
@@ -207,7 +255,8 @@ export default function MapStation({ stations, latestData }) {
           </div>
         `, { direction: 'top', offset: [0, -20], opacity: 0.97 })
 
-        // Click popup — fetches latest photo from media_records on open
+        // Click popup — shows level/rain/status; non-camera stations also
+        // fetch their latest photo from media_records on open
         const levelLine  = data?.water_level_cm   != null
           ? `<div style="margin-bottom:3px">Nivel: <strong style="color:var(--level)">${Number(data.water_level_cm).toFixed(2)} cm</strong></div>` : ''
         const rainLine   = data?.precipitation_mm != null
@@ -248,53 +297,44 @@ export default function MapStation({ stations, latestData }) {
 
         // Estación A (nivel+lluvia) has a live camera feed at /api/last-image
         // instead of a media_records row — the other stations only ever get
-        // photos uploaded into media_records.
+        // photos uploaded into media_records. The photo itself no longer
+        // lives inside the popup (see camModal) — the popup just gets a
+        // button that opens the fullscreen lightbox.
         const isCameraStation = station.sensor_type === 'nivel+lluvia'
-        let currentCamUrl = null
+
+        if (isCameraStation) {
+          popup.setContent(wrapPopup(`
+            <button type="button" class="cam-open-btn" style="
+              margin-top:8px;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
+              padding:8px 10px;border-radius:6px;border:1px solid var(--border);
+              background:var(--panel-alt, rgba(61,157,248,0.08));color:var(--accent, #3b9df8);
+              font-size:11px;font-weight:600;font-family:system-ui;cursor:pointer;
+            ">📷 Ver foto de la cámara</button>
+          `))
+        }
 
         marker.on('popupopen', async () => {
+          if (isCameraStation) {
+            // Content is static (no fetch here) — attach the button's click
+            // handler once; dataset.bound guards against double-binding
+            // since the popup's DOM node is reused across open/close cycles.
+            const el  = popup.getElement()
+            const btn = el?.querySelector('.cam-open-btn')
+            if (btn && !btn.dataset.bound) {
+              btn.dataset.bound = '1'
+              btn.addEventListener('click', (e) => {
+                e.stopPropagation()
+                openCameraModal(station.station_name)
+              })
+            }
+            return
+          }
+
           // Reset to loading state each open
           popup.setContent(wrapPopup(
             `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
           ))
           popup.update()
-
-          if (isCameraStation) {
-            try {
-              const res = await fetch(`/api/last-image?t=${Date.now()}`, { cache: 'no-store' })
-              if (!res.ok) {
-                const body = await res.json().catch(() => ({}))
-                throw new Error(body.error || 'Sin imagen disponible')
-              }
-              const blob = await res.blob()
-              const ts   = res.headers.get('X-Photo-Timestamp')
-
-              if (currentCamUrl) URL.revokeObjectURL(currentCamUrl)
-              currentCamUrl = URL.createObjectURL(blob)
-
-              const photoTs = ts
-                ? `<div style="color:var(--ink-4);font-size:9px;margin-top:3px;text-align:right">${new Date(ts).toLocaleString('es-PY')}</div>`
-                : ''
-
-              popup.setContent(wrapPopup(`
-                <div style="margin-top:8px;max-width:280px;margin-left:auto;margin-right:auto;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
-                  <img
-                    src="${currentCamUrl}"
-                    alt="Cámara ${station.station_name}"
-                    style="width:100%;max-width:280px;height:auto;max-height:160px;object-fit:cover;display:block"
-                  />
-                </div>
-                ${photoTs}
-              `))
-              popup.update()
-            } catch (err) {
-              popup.setContent(wrapPopup(
-                `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center">${err.message || 'Sin imagen disponible'}</div>`
-              ))
-              popup.update()
-            }
-            return
-          }
 
           try {
             const { data: mediaRow, error: mediaErr } = await supabase
@@ -340,10 +380,6 @@ export default function MapStation({ stations, latestData }) {
             ))
             popup.update()
           }
-        })
-
-        marker.on('popupclose', () => {
-          if (currentCamUrl) { URL.revokeObjectURL(currentCamUrl); currentCamUrl = null }
         })
       })
 
@@ -503,6 +539,87 @@ export default function MapStation({ stations, latestData }) {
           </div>
         ))}
       </div>
+
+      {/* Camera lightbox — fixed overlay above the whole page, not clipped by
+          the map container's overflow:hidden like the old in-popup image was. */}
+      {camModal.open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Foto ${camModal.station || 'cámara'}`}
+          onClick={closeCameraModal}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              maxWidth: 'min(90vw, 720px)', maxHeight: '90vh',
+              background: 'var(--panel)', borderRadius: 10, overflow: 'hidden',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}
+          >
+            <button
+              type="button"
+              onClick={closeCameraModal}
+              aria-label="Cerrar"
+              style={{
+                position: 'absolute', top: 8, right: 8, zIndex: 1,
+                width: 32, height: 32, borderRadius: '50%',
+                background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none',
+                cursor: 'pointer', fontSize: 18, lineHeight: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              ✕
+            </button>
+
+            {camModal.loading && (
+              <div style={{
+                width: '80vw', maxWidth: 500, height: 300,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--ink-3)', fontSize: 13, fontFamily: 'system-ui',
+              }}>
+                Cargando imagen…
+              </div>
+            )}
+
+            {camModal.error && !camModal.loading && (
+              <div style={{
+                width: '80vw', maxWidth: 500, height: 300, padding: 20,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--st-critico, #ef4444)', fontSize: 13,
+                fontFamily: 'system-ui', textAlign: 'center',
+              }}>
+                {camModal.error}
+              </div>
+            )}
+
+            {camModal.url && !camModal.loading && !camModal.error && (
+              <>
+                <img
+                  src={camModal.url}
+                  alt={`Última foto de la cámara — ${camModal.station}`}
+                  style={{ display: 'block', width: '100%', maxWidth: '80vw', maxHeight: '80vh', objectFit: 'contain' }}
+                />
+                {camModal.timestamp && (
+                  <div style={{
+                    padding: '8px 12px', fontSize: 12, color: 'var(--ink-3)',
+                    textAlign: 'center', background: 'var(--panel)', fontFamily: MONO,
+                  }}>
+                    {new Date(camModal.timestamp).toLocaleString('es-PY')}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
