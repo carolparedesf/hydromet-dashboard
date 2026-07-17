@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 import { POLL_INTERVAL_MS, LEVEL_THRESHOLDS } from '../lib/constants'
 import { useTheme } from '../components/ThemeProvider'
 import StationCards from '../components/StationCards'
+import LastPhoto from '@/components/LastPhoto'
 import dynamic from 'next/dynamic'
 
 const MapStation    = dynamic(() => import('../components/MapStation'),    { ssr: false })
@@ -467,6 +468,10 @@ export default function Home() {
             </div>
           </div>
         </main>
+
+        <section aria-label="Última imagen">
+          <LastPhoto refreshMs={60000} />
+        </section>
 
         <section aria-label="Registros recientes">
           {loading
