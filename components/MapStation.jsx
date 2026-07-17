@@ -230,12 +230,55 @@ export default function MapStation({ stations, latestData }) {
           ))
         marker.bindPopup(popup)
 
+        // Estación A (nivel+lluvia) has a live camera feed at /api/last-image
+        // instead of a media_records row — the other stations only ever get
+        // photos uploaded into media_records.
+        const isCameraStation = station.sensor_type === 'nivel+lluvia'
+        let currentCamUrl = null
+
         marker.on('popupopen', async () => {
           // Reset to loading state each open
           popup.setContent(wrapPopup(
             `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
           ))
           popup.update()
+
+          if (isCameraStation) {
+            try {
+              const res = await fetch(`/api/last-image?t=${Date.now()}`, { cache: 'no-store' })
+              if (!res.ok) {
+                const body = await res.json().catch(() => ({}))
+                throw new Error(body.error || 'Sin imagen disponible')
+              }
+              const blob = await res.blob()
+              const ts   = res.headers.get('X-Photo-Timestamp')
+
+              if (currentCamUrl) URL.revokeObjectURL(currentCamUrl)
+              currentCamUrl = URL.createObjectURL(blob)
+
+              const photoTs = ts
+                ? `<div style="color:var(--ink-4);font-size:9px;margin-top:3px;text-align:right">${new Date(ts).toLocaleString('es-PY')}</div>`
+                : ''
+
+              popup.setContent(wrapPopup(`
+                <div style="margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
+                  <img
+                    src="${currentCamUrl}"
+                    alt="Cámara ${station.station_name}"
+                    style="width:100%;height:auto;max-height:140px;object-fit:cover;display:block"
+                  />
+                </div>
+                ${photoTs}
+              `))
+              popup.update()
+            } catch (err) {
+              popup.setContent(wrapPopup(
+                `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center">${err.message || 'Sin imagen disponible'}</div>`
+              ))
+              popup.update()
+            }
+            return
+          }
 
           try {
             const { data: mediaRow, error: mediaErr } = await supabase
@@ -281,6 +324,10 @@ export default function MapStation({ stations, latestData }) {
             ))
             popup.update()
           }
+        })
+
+        marker.on('popupclose', () => {
+          if (currentCamUrl) { URL.revokeObjectURL(currentCamUrl); currentCamUrl = null }
         })
       })
 
