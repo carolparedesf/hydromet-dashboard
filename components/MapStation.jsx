@@ -224,7 +224,23 @@ export default function MapStation({ stations, latestData }) {
         const wrapPopup = (inner) =>
           `<div style="font-size:12px;min-width:180px;font-family:system-ui;color:var(--ink)">${stationHeader}${inner}</div>`
 
-        const popup = Lx.popup({ maxWidth: 240, minWidth: 180 })
+        // keepInView + explicit autoPan padding fix the real bug: the popup
+        // opens with a tiny "loading" placeholder (fits fine), then grows
+        // once the photo loads. Plain autoPan only runs once at open time,
+        // so the taller popup ended up clipped by the map container's
+        // overflow:hidden and overlapping the top-left zoom control. This is
+        // NOT forced-open — bindPopup keeps the standard click-to-open
+        // behavior; autoClose/closeOnClick just make that explicit.
+        const popup = Lx.popup({
+          maxWidth: 300,
+          minWidth: 180,
+          autoPan: true,
+          keepInView: true,
+          autoPanPaddingTopLeft: Lx.point(12, 60),
+          autoPanPaddingBottomRight: Lx.point(12, 12),
+          autoClose: true,
+          closeOnClick: true,
+        })
           .setContent(wrapPopup(
             `<div style="margin-top:8px;font-size:10px;color:var(--ink-4);text-align:center;padding:4px">Cargando imagen…</div>`
           ))
@@ -261,11 +277,11 @@ export default function MapStation({ stations, latestData }) {
                 : ''
 
               popup.setContent(wrapPopup(`
-                <div style="margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
+                <div style="margin-top:8px;max-width:280px;margin-left:auto;margin-right:auto;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
                   <img
                     src="${currentCamUrl}"
                     alt="Cámara ${station.station_name}"
-                    style="width:100%;height:auto;max-height:140px;object-fit:cover;display:block"
+                    style="width:100%;max-width:280px;height:auto;max-height:160px;object-fit:cover;display:block"
                   />
                 </div>
                 ${photoTs}
@@ -306,11 +322,11 @@ export default function MapStation({ stations, latestData }) {
             const photoTs = `<div style="color:var(--ink-4);font-size:9px;margin-top:3px;text-align:right">${new Date(mediaRow.timestamp).toLocaleString('es-PY')}</div>`
 
             popup.setContent(wrapPopup(`
-              <div style="margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
+              <div style="margin-top:8px;max-width:280px;margin-left:auto;margin-right:auto;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
                 <img
                   src="${imgUrl}"
                   alt="Foto ${station.station_name}"
-                  style="width:100%;height:auto;max-height:140px;object-fit:cover;display:block"
+                  style="width:100%;max-width:280px;height:auto;max-height:160px;object-fit:cover;display:block"
                   onerror="this.outerHTML='<div style=&quot;font-size:10px;color:var(--ink-4);text-align:center;padding:6px&quot;>Sin imagen disponible</div>'"
                 />
               </div>
