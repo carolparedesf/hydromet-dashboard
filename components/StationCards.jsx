@@ -1,7 +1,9 @@
 'use client'
 
-import { useMemo } from 'react'
-import { statusForLevel, STATUS_LABEL } from '../lib/constants'
+import { useEffect, useState } from 'react'
+import { format } from 'date-fns'
+import { statusForLevel, STATUS_LABEL, UMBRAL_NARANJA, UMBRAL_ROJO, MAX_SIN_DATOS_MS } from '../lib/constants'
+import { formatAge } from '../lib/formatAge'
 
 const MONO = 'var(--font-mono, "Space Mono", monospace)'
 const SANS = 'var(--font-sans, Inter, system-ui, sans-serif)'
@@ -63,18 +65,17 @@ function StatusPill({ rawValue }) {
 }
 
 // ─── ThresholdBar ────────────────────────────────────────────────────────────
-// Spec §6: 6px segmented track, 0–250 cm range.
-// Segments: NORMAL 50 cm (20%) · ATENCIÓN 50 cm (20%) · ALERTA 100 cm (40%) · CRÍTICO 50 cm (20%)
-// Marker triangle points down at value/250 position.
-// Scale captions at proportionally-correct positions.
+// Spec §6: 6px segmented track, in meters, same 0–4 m span as the chart's
+// level axis. Segments follow the shared thresholds (lib/constants.js):
+// NORMAL 0–UMBRAL_NARANJA · ALERTA UMBRAL_NARANJA–UMBRAL_ROJO · CRÍTICO above.
+// Marker triangle points down at value/BAR_MAX position.
 
-const BAR_MAX  = 250
+const BAR_MAX  = UMBRAL_ROJO + 1
 const BAR_TICKS = [
-  { label: '0',      pct: 0                        },
-  { label: '50',     pct: (50  / BAR_MAX) * 100    },  // 20 %
-  { label: '100',    pct: (100 / BAR_MAX) * 100    },  // 40 %
-  { label: '200',    pct: (200 / BAR_MAX) * 100    },  // 80 %
-  { label: '250 cm', pct: 100                      },
+  { label: '0',                    pct: 0                                },
+  { label: String(UMBRAL_NARANJA), pct: (UMBRAL_NARANJA / BAR_MAX) * 100 },
+  { label: String(UMBRAL_ROJO),    pct: (UMBRAL_ROJO    / BAR_MAX) * 100 },
+  { label: `${BAR_MAX} m`,         pct: 100                              },
 ]
 
 function ThresholdBar({ value }) {
@@ -95,12 +96,11 @@ function ThresholdBar({ value }) {
           borderTop: '5px solid var(--ink)',
         }} />
 
-        {/* Four segments — flex units are proportional to cm widths */}
+        {/* Three segments — flex units are proportional to their width in meters */}
         <div style={{ display: 'flex', gap: '1.5px', height: 6 }}>
-          <div style={{ flex: 50,  background: 'var(--st-normal)',   opacity: 0.32, borderRadius: 2 }} />
-          <div style={{ flex: 50,  background: 'var(--st-atencion)', opacity: 0.32, borderRadius: 2 }} />
-          <div style={{ flex: 100, background: 'var(--st-alerta)',   opacity: 0.32, borderRadius: 2 }} />
-          <div style={{ flex: 50,  background: 'var(--st-critico)',  opacity: 0.32, borderRadius: 2 }} />
+          <div style={{ flex: UMBRAL_NARANJA,               background: 'var(--st-normal)',  opacity: 0.32, borderRadius: 2 }} />
+          <div style={{ flex: UMBRAL_ROJO - UMBRAL_NARANJA, background: 'var(--st-alerta)',  opacity: 0.32, borderRadius: 2 }} />
+          <div style={{ flex: BAR_MAX - UMBRAL_ROJO,        background: 'var(--st-critico)', opacity: 0.32, borderRadius: 2 }} />
         </div>
       </div>
 
@@ -157,7 +157,7 @@ function RainBar({ value }) {
 // rawValue: unformatted number used for StatusPill + bar calculations.
 // value: pre-formatted string displayed as the headline figure.
 
-function KpiCard({ label, value, unit, sub, type, rawValue }) {
+function KpiCard({ label, value, unit, sub, stale, type, rawValue }) {
   return (
     <div style={{
       background: 'var(--panel)',
@@ -211,11 +211,11 @@ function KpiCard({ label, value, unit, sub, type, rawValue }) {
       {type === 'level' && rawValue != null && <ThresholdBar value={rawValue} />}
       {type === 'rain'  && rawValue != null && <RainBar value={rawValue} />}
 
-      {/* Sub-note */}
+      {/* Sub-note — alert color + explicit text when the reading is stale */}
       {sub && (
         <div style={{
-          fontSize: 12.5, color: 'var(--ink-3)',
-          fontFamily: SANS, marginTop: 6,
+          fontSize: 12.5, color: stale ? 'var(--st-alerta)' : 'var(--ink-3)',
+          fontFamily: SANS, marginTop: 6, fontWeight: stale ? 600 : 400,
         }}>
           {sub}
         </div>
@@ -225,82 +225,75 @@ function KpiCard({ label, value, unit, sub, type, rawValue }) {
 }
 
 // ─── StationCards ─────────────────────────────────────────────────────────────
+// Latest reading of the Colegio SIL station, from the same source as the chart
+// (/api/grafana-data?solo=ultimo, polled by page.js).
+//   lectura  { t, nivel, lluvia, acum1h } of the latest reading, or null
+//   error    message when the request failed; onRetry re-requests
 
-export default function StationCards({ stations, latestData, records }) {
-  const kpis = useMemo(() => {
-    if (!records || !records.length) return null
+export default function StationCards({ lectura, error, retrying, onRetry }) {
+  // Ticks every 30 s so "hace X" keeps aging between polls.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
 
-    const levelVals = records.map(r => r.water_level_cm).filter(v => v != null).map(Number)
-    const rainVals  = records.map(r => r.precipitation_mm).filter(v => v != null).map(Number)
-
-    // reduce() instead of Math.max(...arr) — safe on large arrays (no call-stack risk)
-    const maxLevel = levelVals.length ? levelVals.reduce((a, b) => Math.max(a, b), -Infinity) : null
-    const avgLevel = levelVals.length ? levelVals.reduce((a, b) => a + b, 0) / levelVals.length  : null
-    const maxRain  = rainVals.length  ? rainVals.reduce((a, b) => Math.max(a, b), -Infinity)   : null
-
-    const byDay = {}
-    records.forEach(r => {
-      if (r.precipitation_mm == null) return
-      const day = r.timestamp.slice(0, 10)
-      byDay[day] = (byDay[day] || 0) + Number(r.precipitation_mm)
-    })
-    const rainiestDay = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0]
-
-    const levelByDay = {}
-    records.forEach(r => {
-      if (r.water_level_cm == null) return
-      const day = r.timestamp.slice(0, 10)
-      levelByDay[day] = Math.max(levelByDay[day] || 0, Number(r.water_level_cm))
-    })
-    const peakLevelDay = Object.entries(levelByDay).sort((a, b) => b[1] - a[1])[0]
-
-    return { maxLevel, avgLevel, maxRain, rainiestDay, peakLevelDay }
-  }, [records])
-
-  function formatDate(iso) {
-    if (!iso) return '—'
-    const [y, m, d] = iso.split('-')
-    return `${d}/${m}/${y}`
+  if (!lectura) {
+    return (
+      <div role="alert" style={{
+        display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        background: 'var(--st-critico-soft)', border: '1px solid var(--st-critico)',
+        borderRadius: 8, padding: '12px 16px',
+        fontFamily: MONO, fontSize: 12, color: 'var(--st-critico)',
+      }}>
+        {error ? `No se pudo obtener la última lectura de Grafana (${error}).` : 'Sin lecturas disponibles.'}
+        {error && (
+          <button onClick={onRetry} disabled={retrying} style={{
+            background: 'var(--panel)', border: '1px solid var(--border)', color: 'var(--ink-2)',
+            borderRadius: 6, padding: '4px 10px', fontSize: 11, fontFamily: MONO, cursor: 'pointer',
+          }}>
+            {retrying ? 'Reintentando…' : 'Reintentar'}
+          </button>
+        )}
+      </div>
+    )
   }
 
-  if (!kpis) return null
+  const age   = Math.max(0, now - lectura.t)
+  const stale = age > MAX_SIN_DATOS_MS
+  const sub   = stale
+    ? `Sin lecturas nuevas · último dato hace ${formatAge(age)}`
+    : `Lectura de las ${format(new Date(lectura.t), 'HH:mm')} · hace ${formatAge(age)}`
 
   return (
     <div className="kpi-grid">
-
-      {kpis.maxLevel != null && (
-        <KpiCard
-          label="Nivel máximo histórico"
-          value={kpis.maxLevel.toFixed(2)}
-          unit="cm"
-          sub={kpis.peakLevelDay ? 'Pico el ' + formatDate(kpis.peakLevelDay[0]) : ''}
-          type="level"
-          rawValue={kpis.maxLevel}
-        />
-      )}
-
-      {kpis.avgLevel != null && (
-        <KpiCard
-          label="Nivel promedio del período"
-          value={kpis.avgLevel.toFixed(2)}
-          unit="cm"
-          sub="Promedio horario"
-          type="level"
-          rawValue={kpis.avgLevel}
-        />
-      )}
-
-      {kpis.maxRain != null && (
-        <KpiCard
-          label="Lluvia máx. por hora"
-          value={kpis.maxRain.toFixed(1)}
-          unit="mm"
-          sub={kpis.rainiestDay ? 'Día más lluvioso: ' + formatDate(kpis.rainiestDay[0]) : ''}
-          type="rain"
-          rawValue={kpis.maxRain}
-        />
-      )}
-
+      <KpiCard
+        label="Nivel actual"
+        value={lectura.nivel != null ? lectura.nivel.toFixed(2) : '—'}
+        unit="m"
+        sub={sub}
+        stale={stale}
+        type="level"
+        rawValue={lectura.nivel}
+      />
+      <KpiCard
+        label="Lluvia última lectura"
+        value={lectura.lluvia != null ? lectura.lluvia.toFixed(1) : '—'}
+        unit="mm · 5 min"
+        sub={sub}
+        stale={stale}
+        type="rain"
+        rawValue={lectura.lluvia}
+      />
+      <KpiCard
+        label="Lluvia Acumulada 1h"
+        value={lectura.acum1h != null ? lectura.acum1h.toFixed(2) : '—'}
+        unit="mm"
+        sub={sub}
+        stale={stale}
+        type="rain"
+        rawValue={lectura.acum1h}
+      />
     </div>
   )
 }

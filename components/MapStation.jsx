@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import { statusForLevel, UMBRAL_NARANJA, UMBRAL_ROJO } from '../lib/constants'
 
 const MONO = 'var(--font-mono, "Space Mono", monospace)'
 
@@ -76,22 +77,24 @@ export default function MapStation({ stations, latestData }) {
     document.head.appendChild(link)
   }, [])
 
+  // water_level_cm guarda METROS pese al nombre; los umbrales son los
+  // compartidos de lib/constants.js (mismos que el gráfico y las tarjetas).
+  const MAP_STATUS = {
+    critico: { label: 'RIESGO INUNDACIÓN', color: 'var(--st-critico)' },
+    alerta:  { label: 'NIVEL ELEVADO',     color: 'var(--st-alerta)'  },
+    normal:  { label: 'NORMAL',            color: 'var(--st-normal)'  },
+  }
+
   function getColor(station) {
     const level = latestData[station.id]?.water_level_cm
     if (level == null) return 'var(--accent)'
-    if (level > 200)   return 'var(--st-critico)'
-    if (level > 100)   return 'var(--st-alerta)'
-    if (level > 50)    return 'var(--st-atencion)'
-    return 'var(--st-normal)'
+    return MAP_STATUS[statusForLevel(Number(level))].color
   }
 
   function getStatus(station) {
     const level = latestData[station.id]?.water_level_cm
-    if (level == null) return { label: 'SIN DATOS',         color: 'var(--ink-3)' }
-    if (level > 200)   return { label: 'RIESGO INUNDACIÓN', color: 'var(--st-critico)' }
-    if (level > 100)   return { label: 'NIVEL ELEVADO',     color: 'var(--st-alerta)' }
-    if (level > 50)    return { label: 'LLUVIA INTENSA',    color: 'var(--st-atencion)' }
-    return { label: 'NORMAL', color: 'var(--st-normal)' }
+    if (level == null) return { label: 'SIN DATOS', color: 'var(--ink-3)' }
+    return MAP_STATUS[statusForLevel(Number(level))]
   }
 
   useEffect(() => {
@@ -249,7 +252,7 @@ export default function MapStation({ stations, latestData }) {
         ).addTo(map)
 
         // Hover tooltip — shows station name, level, rainfall, status
-        const levelText = data?.water_level_cm   != null ? `Nivel: ${Number(data.water_level_cm).toFixed(2)} cm`  : ''
+        const levelText = data?.water_level_cm   != null ? `Nivel: ${Number(data.water_level_cm).toFixed(2)} m`  : ''
         const rainText  = data?.precipitation_mm != null ? `Lluvia: ${Number(data.precipitation_mm).toFixed(1)} mm` : ''
 
         marker.bindTooltip(`
@@ -288,7 +291,7 @@ export default function MapStation({ stations, latestData }) {
         // Click popup — shows level/rain/status, and fetches the latest
         // photo from media_records on open
         const levelLine  = data?.water_level_cm   != null
-          ? `<div style="margin-bottom:3px">Nivel: <strong style="color:var(--level)">${Number(data.water_level_cm).toFixed(2)} cm</strong></div>` : ''
+          ? `<div style="margin-bottom:3px">Nivel: <strong style="color:var(--level)">${Number(data.water_level_cm).toFixed(2)} m</strong></div>` : ''
         const rainLine   = data?.precipitation_mm != null
           ? `<div style="margin-bottom:3px">Lluvia: <strong style="color:var(--rain)">${Number(data.precipitation_mm).toFixed(1)} mm</strong></div>` : ''
         const statusLine = `<div style="color:${statusColor};font-size:10px;font-weight:600;margin-top:4px">${status.label}</div>`
@@ -510,7 +513,7 @@ export default function MapStation({ stations, latestData }) {
                     <div style={{ fontSize: 9, color: 'var(--ink-4)' }}>nivel</div>
                     <div style={{ fontSize: 12, color: 'var(--level)', fontFamily: MONO, fontWeight: 700 }}>
                       {Number(data.water_level_cm).toFixed(2)}
-                      <span style={{ fontSize: 9, color: 'var(--ink-4)' }}>cm</span>
+                      <span style={{ fontSize: 9, color: 'var(--ink-4)' }}>m</span>
                     </div>
                   </div>
                 )}
@@ -523,10 +526,9 @@ export default function MapStation({ stations, latestData }) {
       {/* Threshold legend — color + label + range (not color alone, per WCAG 1.4.1) */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: '0 2px' }}>
         {[
-          { color: 'var(--st-normal)',   label: 'NORMAL',   range: '0–50 cm'    },
-          { color: 'var(--st-atencion)', label: 'ATENCIÓN', range: '50–100 cm'  },
-          { color: 'var(--st-alerta)',   label: 'ALERTA',   range: '100–200 cm' },
-          { color: 'var(--st-critico)',  label: 'CRÍTICO',  range: '> 200 cm'   },
+          { color: 'var(--st-normal)',  label: 'NORMAL',  range: `< ${UMBRAL_NARANJA} m`                },
+          { color: 'var(--st-alerta)',  label: 'ALERTA',  range: `${UMBRAL_NARANJA}–${UMBRAL_ROJO} m` },
+          { color: 'var(--st-critico)', label: 'CRÍTICO', range: `≥ ${UMBRAL_ROJO} m`                 },
         ].map(item => (
           <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: item.color, flexShrink: 0 }} />
@@ -672,7 +674,7 @@ export default function MapStation({ stations, latestData }) {
                   </div>
                   <div style={{ fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)', fontWeight: 600, fontSize: 22, color: '#9fd8e8' }}>
                     {camModal.level != null ? Number(camModal.level).toFixed(2) : '—'}
-                    <span style={{ fontSize: 13, color: 'rgba(232,236,240,0.4)' }}> cm</span>
+                    <span style={{ fontSize: 13, color: 'rgba(232,236,240,0.4)' }}> m</span>
                   </div>
                 </div>
                 <div>

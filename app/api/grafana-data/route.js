@@ -16,47 +16,120 @@ const DATASOURCE   = { type: 'mysql', uid: 'cpH4-LwNk' };
 //    ya devuelve hora local, así que se compara contra timeStamp SIN shift.
 //    (Restar 3 h acá desplazaría la ventana 3 h hacia atrás; verificado.)
 // Nivel = 7.0 − lectura del sensor (distancia al agua), como en el panel.
-const SERIES_SQL = `
+//
+// "Lluvia Acumulada 1h (mm)" se calcula en MySQL igual que la query C del
+// panel: ventana móvil de las últimas 12 lecturas (ROWS BETWEEN 11 PRECEDING
+// AND CURRENT ROW, ordenadas por timeStamp), sin topes ni descartes, para
+// dar los mismos números que Grafana. Valores de ACUM_1H_MODO:
+//  'promedio' → AVG(lluvia), exactamente como la query C del panel.
+//  'suma'     → SUM(lluvia) sobre la misma ventana de 12 lecturas.
+const ACUM_1H_MODO = 'promedio';
+const ACUM_FN = ACUM_1H_MODO === 'suma' ? 'SUM' : 'AVG';
+const ACUM_WINDOW = `${ACUM_FN}(lluvia) OVER (ORDER BY timeStamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW)`;
+
+// Serie agrupada en MySQL por buckets de tiempo de bucketSeg segundos, para
+// devolver como máximo ~MAX_PUNTOS puntos aun con la tabla completa:
+//  - base: cada lectura con su acum1h, calculado como la query C del panel
+//    (ventana de 12 lecturas). La query C corre sobre toda la tabla, así que
+//    la ventana de las primeras lecturas del rango incluye lecturas
+//    anteriores: base arranca en la 11.ª lectura previa al rango.
+//  - ranked: asigna el bucket y numera las lecturas de cada bucket por nivel
+//    y por acum1h descendentes, para saber a qué hora ocurrió cada máximo.
+//  - Por bucket: MAX(nivel) con su hora (el punto se ubica ahí), MAX(lluvia),
+//    SUM(lluvia) (totales diarios), MAX(acum1h) con su hora, inicio/fin y
+//    cantidad de lecturas. Con buckets de 5 min cada punto es una lectura.
+// Los buckets se alinean a la hora local (UTC−3) para que los de varias
+// horas no crucen la medianoche de Paraguay.
+const LOCAL_OFFSET_S = 3 * 3600;
+const seriesSql = (bucketSeg) => {
+  const bucket = `FLOOR((UNIX_TIMESTAMP(timeStamp) - ${LOCAL_OFFSET_S}) / ${bucketSeg})`;
+  return `
+WITH base AS (
+  SELECT timeStamp, (7.0 - Nivel) AS nivel, lluvia, ${ACUM_WINDOW} AS acum1h
+  FROM Mburicao_Sil_RainAndLevel
+  WHERE timeStamp >= COALESCE(
+      (SELECT timeStamp FROM Mburicao_Sil_RainAndLevel
+       WHERE timeStamp < $__timeFrom()
+       ORDER BY timeStamp DESC LIMIT 1 OFFSET 10),
+      '1970-01-01')
+    AND timeStamp <= $__timeTo()
+),
+ranked AS (
+  SELECT base.*,
+    ${bucket} AS b,
+    ROW_NUMBER() OVER (PARTITION BY ${bucket} ORDER BY nivel DESC, timeStamp)  AS rn_nivel,
+    ROW_NUMBER() OVER (PARTITION BY ${bucket} ORDER BY acum1h DESC, timeStamp) AS rn_acum
+  FROM base
+  WHERE $__timeFilter(timeStamp)
+)
+SELECT
+  DATE_ADD(MAX(CASE WHEN rn_nivel = 1 THEN timeStamp END), INTERVAL 3 HOUR) AS "time",
+  DATE_ADD(MIN(timeStamp), INTERVAL 3 HOUR) AS t_inicio,
+  DATE_ADD(MAX(timeStamp), INTERVAL 3 HOUR) AS t_fin,
+  DATE_ADD(MAX(CASE WHEN rn_acum = 1 THEN timeStamp END), INTERVAL 3 HOUR) AS t_acum,
+  COUNT(*) AS n,
+  MAX(nivel)  AS nivel,
+  MAX(lluvia) AS lluvia,
+  SUM(lluvia) AS lluvia_suma,
+  MAX(acum1h) AS acum1h
+FROM ranked
+GROUP BY b
+ORDER BY b`;
+};
+
+// Últimas 12 lecturas de toda la tabla (no solo del rango): la última es
+// "ultimaLectura" (tarjetas, indicador "último dato hace X") y su acum1h es
+// la ventana de esas 12, igual que la query C para la fila más reciente.
+const LATEST_SQL = `
 SELECT
   DATE_ADD(timeStamp, INTERVAL 3 HOUR) AS "time",
   (7.0 - Nivel) AS nivel,
-  lluvia
-FROM Mburicao_Sil_RainAndLevel
-WHERE $__timeFilter(timeStamp)
+  lluvia,
+  ${ACUM_WINDOW} AS acum1h
+FROM (
+  SELECT timeStamp, Nivel, lluvia
+  FROM Mburicao_Sil_RainAndLevel
+  ORDER BY timeStamp DESC
+  LIMIT 12
+) last12
 ORDER BY timeStamp`;
-
-// Última lectura de toda la tabla (no solo del rango), para el indicador
-// "último dato hace X".
-const LATEST_SQL = `
-SELECT DATE_ADD(MAX(timeStamp), INTERVAL 3 HOUR) AS ultimo
-FROM Mburicao_Sil_RainAndLevel`;
-
-// Cómo se calcula "lluvia acumulada 1 h" sobre las lecturas de (t − 1 h, t]:
-//  'suma'     → suma de las lecturas (correcto si `lluvia` son mm caídos en
-//               cada intervalo de 5 min).
-//  'promedio' → promedio de las lecturas, como la query C del panel de
-//               Grafana (correcto si `lluvia` es una intensidad en mm/h).
-// Los datos sugieren intensidad (mediana de lecturas con lluvia ≈ 12, que como
-// mm cada 5 min serían ~144 mm/h); confirmar la unidad del sensor.
-const ACUM_1H_MODO = 'suma';
 
 const HOUR_MS = 3600 * 1000;
 const DAY_MS  = 24 * HOUR_MS;
 
 const DEFAULT_FROM = 'now-24h';
 const DEFAULT_TO   = 'now';
-// Límites: hasta 31 días por consulta (~9k lecturas cada 5 min) y nada
-// anterior al inicio de la serie.
-const MAX_SPAN_MS = 31 * DAY_MS;
-const MIN_FROM_MS = Date.UTC(2025, 0, 1);
+// Inicio de la serie (primera lectura: 2026-07-10, hora local). "from" puede
+// abarcar toda la tabla; uno anterior se recorta acá. ?from=inicio lo usa
+// directamente ("Todo el período").
+const MIN_FROM_MS = Date.UTC(2026, 6, 10, 3, 0, 0);
+
+// Tamaño de bucket según el rango: 5 min (cada lectura) hasta ~7 días; más
+// allá, la menor cantidad de horas que deje ≤ MAX_PUNTOS puntos, entre
+// divisores de 24 h para que los buckets no crucen la medianoche.
+const MAX_PUNTOS   = 2000;
+const RAW_BUCKET_S = 5 * 60;
+const HOUR_BUCKETS = [1, 2, 3, 4, 6, 8, 12, 24];
+function bucketSecondsFor(spanMs) {
+  if (spanMs <= 7 * DAY_MS + HOUR_MS) return RAW_BUCKET_S;
+  const hours = HOUR_BUCKETS.find(h => spanMs / (h * HOUR_MS) <= MAX_PUNTOS) ?? 24;
+  return hours * 3600;
+}
+
+// Caché en el CDN: 60 s para rangos finos; 5 min cuando hay agrupación por
+// horas (rangos largos), que cambian poco entre consultas.
+const CACHE_SHORT = 'public, s-maxage=60, stale-while-revalidate=60';
+const CACHE_LONG  = 'public, s-maxage=300, stale-while-revalidate=300';
 
 const TIMEOUT_MS = 10_000;
 
 const UNIT_MS = { m: 60 * 1000, h: HOUR_MS, d: DAY_MS };
 
-// Accepts epoch ms, `now`, or `now-<n><m|h|d>` (relative values keep the URL
-// stable between polls, so the CDN cache can actually serve repeats).
+// Accepts epoch ms, `now`, `now-<n><m|h|d>` or `inicio` (start of the series).
+// Relative values keep the URL stable between polls, so the CDN cache can
+// actually serve repeats.
 function parseTime(value, now) {
+  if (value === 'inicio') return MIN_FROM_MS;
   if (/^\d{12,14}$/.test(value)) return Number(value);
   const m = /^now(?:-(\d{1,4})([mhd]))?$/.exec(value);
   if (!m) return null;
@@ -81,30 +154,61 @@ function frameColumns(result) {
 
 const round = (v, digits) => (v == null ? null : Number(Number(v).toFixed(digits)));
 
+// Frame columns → [{ t, nivel, lluvia, acum1h }]. Rows are passed through as
+// Grafana returns them (duplicates and outliers included) so the numbers
+// match the panel; acum1h gets 3 decimals since the 12-reading average of
+// 0.1 mm steps is often below 0.01.
+function puntosFrom(cols) {
+  return (cols.time ?? []).map((t, i) => ({
+    t,
+    nivel:  round(cols.nivel?.[i], 3),
+    lluvia: round(cols.lluvia?.[i], 2),
+    acum1h: round(cols.acum1h?.[i], 3),
+  }));
+}
+
+// Grouped series columns → [{ t, tStart, tEnd, tAcum, n, nivel, lluvia,
+// lluviaSuma, acum1h }]. t is when the bucket's level maximum happened.
+function seriesFrom(cols) {
+  return (cols.time ?? []).map((t, i) => ({
+    t,
+    tStart:     cols.t_inicio?.[i],
+    tEnd:       cols.t_fin?.[i],
+    tAcum:      cols.t_acum?.[i],
+    n:          cols.n?.[i],
+    nivel:      round(cols.nivel?.[i], 3),
+    lluvia:     round(cols.lluvia?.[i], 2),
+    lluviaSuma: round(cols.lluvia_suma?.[i], 2),
+    acum1h:     round(cols.acum1h?.[i], 3),
+  }));
+}
+
+// ?solo=ultimo returns just { ultimo, ultimaLectura } (one cheap query), for
+// the KPI cards; otherwise the series for the range is included.
 export async function GET(request) {
   const sp  = request.nextUrl.searchParams;
   const now = Date.now();
+  const soloUltimo = sp.get('solo') === 'ultimo';
 
-  const from = parseTime(sp.get('from') || DEFAULT_FROM, now);
-  let   to   = parseTime(sp.get('to')   || DEFAULT_TO,   now);
+  let from = parseTime(sp.get('from') || DEFAULT_FROM, now);
+  let to   = parseTime(sp.get('to')   || DEFAULT_TO,   now);
   if (from == null || to == null) {
-    return errorResponse(400, 'from/to inválidos: usar epoch ms, "now" o "now-<n>[m|h|d]"');
+    return errorResponse(400, 'from/to inválidos: usar epoch ms, "now", "now-<n>[m|h|d]" o "inicio"');
   }
-  to = Math.min(to, now + 5 * 60 * 1000);
-  if (from >= to)                 return errorResponse(400, '"from" debe ser anterior a "to"');
-  if (to - from > MAX_SPAN_MS)    return errorResponse(400, 'El rango máximo es de 31 días');
-  if (from < MIN_FROM_MS)         return errorResponse(400, 'El rango empieza antes del inicio de la serie');
+  // Clamp to the table: nothing before its first reading, nothing in the future.
+  from = Math.max(from, MIN_FROM_MS);
+  to   = Math.min(to, now + 5 * 60 * 1000);
+  if (from >= to) return errorResponse(400, '"from" debe ser anterior a "to"');
 
-  // One extra hour before `from` so the 1 h accumulation of the first points
-  // includes the readings that precede the range.
-  const body = {
-    from: String(from - HOUR_MS),
-    to:   String(to),
-    queries: [
-      { refId: 'A', datasource: DATASOURCE, rawQuery: true, format: 'table', rawSql: SERIES_SQL },
-      { refId: 'U', datasource: DATASOURCE, rawQuery: true, format: 'table', rawSql: LATEST_SQL },
-    ],
-  };
+  const bucketSeg = bucketSecondsFor(to - from);
+
+  const queries = [
+    { refId: 'U', datasource: DATASOURCE, rawQuery: true, format: 'table', rawSql: LATEST_SQL },
+  ];
+  if (!soloUltimo) {
+    queries.push({ refId: 'A', datasource: DATASOURCE, rawQuery: true, format: 'table', rawSql: seriesSql(bucketSeg) });
+  }
+  const body = { from: String(from), to: String(to), queries };
 
   let res;
   try {
@@ -126,51 +230,23 @@ export async function GET(request) {
   let series, latest;
   try {
     const json = await res.json();
-    series = frameColumns(json.results?.A);
     latest = frameColumns(json.results?.U);
+    series = soloUltimo ? null : frameColumns(json.results?.A);
   } catch (err) {
     return errorResponse(502, `Respuesta inválida de Grafana: ${err.message}`);
   }
 
-  // The table has a few duplicated rows (same timeStamp twice); keep one so
-  // they don't count twice in the 1 h window.
-  const rows = [];
-  (series.time ?? []).forEach((t, i) => {
-    if (rows.length && rows[rows.length - 1].t === t) return;
-    rows.push({ t, nivel: series.nivel?.[i], lluvia: Number(series.lluvia?.[i] ?? 0) });
-  });
-
-  // Lluvia acumulada 1 h sobre las lecturas en (t − 1 h, t] (12 lecturas
-  // cuando no faltan datos), con una ventana deslizante. Ver ACUM_1H_MODO.
-  const puntos = [];
-  let windowStart = 0;
-  let windowSum   = 0;
-  for (let i = 0; i < rows.length; i++) {
-    windowSum += rows[i].lluvia;
-    while (rows[windowStart].t <= rows[i].t - HOUR_MS) {
-      windowSum -= rows[windowStart].lluvia;
-      windowStart++;
-    }
-    if (rows[i].t < from) continue;
-    const acum = ACUM_1H_MODO === 'promedio' ? windowSum / (i - windowStart + 1) : windowSum;
-    puntos.push({
-      t:      rows[i].t,
-      nivel:  round(rows[i].nivel, 3),
-      lluvia: round(rows[i].lluvia, 2),
-      acum1h: round(Math.max(0, acum), 2),
-    });
+  const ultimaLectura = puntosFrom(latest).at(-1) ?? null;
+  const payload = { ultimo: ultimaLectura?.t ?? null, ultimaLectura };
+  if (!soloUltimo) {
+    Object.assign(payload, { from, to, bucketSeg, puntos: seriesFrom(series) });
   }
 
-  return new Response(JSON.stringify({
-    from,
-    to,
-    ultimo: latest.ultimo?.[0] ?? null,
-    puntos,
-  }), {
+  return new Response(JSON.stringify(payload), {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=60',
+      'Cache-Control': !soloUltimo && bucketSeg > RAW_BUCKET_S ? CACHE_LONG : CACHE_SHORT,
     },
   });
 }

@@ -3,7 +3,8 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { subDays } from 'date-fns'
 import { supabase } from '../lib/supabase'
-import { POLL_INTERVAL_MS, LEVEL_THRESHOLDS } from '../lib/constants'
+import { POLL_INTERVAL_MS, UMBRAL_ROJO } from '../lib/constants'
+import { useGrafanaSeries } from '../lib/useGrafanaSeries'
 import { useTheme } from '../components/ThemeProvider'
 import StationCards from '../components/StationCards'
 import dynamic from 'next/dynamic'
@@ -233,6 +234,8 @@ export default function Home() {
           )
         )
 
+        // OJO: pese al nombre, la columna water_level_cm de Supabase (y
+        // avg_level / max_level del RPC) guarda el nivel en METROS, no en cm.
         const allRecords = []
         rpcResults.forEach(({ data: sampled }, i) => {
           if (!sampled) return
@@ -321,10 +324,13 @@ export default function Home() {
     () => stationLluvia ? (recordsByStation[stationLluvia.id] || []) : [],
     [stationLluvia, recordsByStation]
   )
-  const isCritical = useMemo(
-    () => Object.values(latestData).some(d => (d?.water_level_cm ?? 0) >= LEVEL_THRESHOLDS.CRITICO),
-    [latestData]
-  )
+  // Latest reading from Grafana — same source as CombinedChart — for the KPI
+  // cards and the header status. Polled every 60 s; from/to are ignored by
+  // the route in solo=ultimo mode (the latest reading of the whole table).
+  const ultima = useGrafanaSeries('now-1h', 'now', { soloUltimo: true })
+  const lectura = ultima.data?.ultimaLectura ?? null
+
+  const isCritical = (lectura?.nivel ?? 0) >= UMBRAL_ROJO
 
   return (
     <div className="min-h-screen">
@@ -404,7 +410,7 @@ export default function Home() {
         {error && <ErrorBanner message={error} />}
 
         <section aria-label="Indicadores" aria-live="polite" aria-atomic="false">
-          {loading
+          {ultima.loading
             ? (
               <div className="kpi-grid">
                 <div className="skel" style={{ height: 116, borderRadius: 8 }} />
@@ -412,7 +418,14 @@ export default function Home() {
                 <div className="skel" style={{ height: 116, borderRadius: 8 }} />
               </div>
             )
-            : <StationCards stations={stations} latestData={latestData} records={records} />
+            : (
+              <StationCards
+                lectura={lectura}
+                error={ultima.error}
+                retrying={ultima.retrying}
+                onRetry={ultima.retry}
+              />
+            )
           }
         </section>
 

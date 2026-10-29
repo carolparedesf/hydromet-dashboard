@@ -144,7 +144,7 @@ export default function DataTable({ records, stations }) {
             <tr>
               <th scope="col" style={{ ...thStyle, textAlign: 'left'  }}>FECHA / HORA</th>
               <th scope="col" style={{ ...thStyle, textAlign: 'left'  }}>ESTACIÓN</th>
-              <th scope="col" style={{ ...thStyle, textAlign: 'right' }}>NIVEL (cm)</th>
+              <th scope="col" style={{ ...thStyle, textAlign: 'right' }}>NIVEL (m)</th>
               <th scope="col" style={{ ...thStyle, textAlign: 'right' }}>LLUVIA (mm)</th>
               <th scope="col" style={{ ...thStyle, textAlign: 'left'  }}>ESTADO</th>
             </tr>
@@ -199,7 +199,7 @@ export default function DataTable({ records, stations }) {
                     </div>
                   </td>
 
-                  {/* NIVEL cm */}
+                  {/* NIVEL m (water_level_cm guarda metros) */}
                   <td style={{
                     padding: '9px 14px', textAlign: 'right',
                     fontFamily: MONO, fontSize: 13,
@@ -207,7 +207,7 @@ export default function DataTable({ records, stations }) {
                     color: levelColor(levelVal),
                   }}>
                     {levelVal != null
-                      ? <>{levelVal.toFixed(2)}<span style={{ fontSize: 10, color: 'var(--ink-4)', marginLeft: 2 }}>cm</span></>
+                      ? <>{levelVal.toFixed(2)}<span style={{ fontSize: 10, color: 'var(--ink-4)', marginLeft: 2 }}>m</span></>
                       : <span style={{ color: 'var(--ink-4)' }}>—</span>
                     }
                   </td>

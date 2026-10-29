@@ -9,6 +9,8 @@ import {
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { useGrafanaSeries } from '../lib/useGrafanaSeries'
+import { UMBRAL_NARANJA, UMBRAL_ROJO, MAX_SIN_DATOS_MS } from '../lib/constants'
+import { formatAge } from '../lib/formatAge'
 
 // ─── Constantes editables (pestaña SERIE TEMPORAL) ──────────────────────────
 
@@ -17,21 +19,20 @@ import { useGrafanaSeries } from '../lib/useGrafanaSeries'
 const NIVEL_MIN_M = 0
 const NIVEL_MAX_M = 4
 
-// Umbrales de nivel, en metros (los mismos del panel 4 de Grafana): banda
-// naranja "Alerta" entre UMBRAL_NARANJA y UMBRAL_ROJO, roja "Crítico" encima.
-const UMBRAL_NARANJA = 2
-const UMBRAL_ROJO    = 3
+// Techo fijo del eje de lluvia (derecho), en mm, como el panel de Grafana
+// (axis max 50). Barras y línea que lo superen se recortan contra el techo;
+// tooltip y leyenda siguen mostrando el valor real.
+const LLUVIA_MAX_MM = 50
 
-// Si pasa más de este tiempo sin lecturas, el indicador "último dato" se
-// pinta en color de alerta. La estación reporta cada 5 min.
-const MAX_SIN_DATOS_MS = 30 * 60 * 1000
+// Los umbrales de nivel (UMBRAL_NARANJA / UMBRAL_ROJO) y MAX_SIN_DATOS_MS
+// están en lib/constants.js, compartidos con tarjetas, mapa y tabla.
 
 // Un hueco mayor a esto entre lecturas corta la línea en vez de unirla.
 const GAP_MS = 15 * 60 * 1000
 
-// Máximo de puntos dibujados; por encima se agrupa por intervalos de tiempo
-// conservando los picos.
-const MAX_PUNTOS = 600
+// La agrupación de rangos largos la hace /api/grafana-data en MySQL (buckets
+// de 5 min hasta ~7 días, luego de horas; ≤ ~2000 puntos). El cliente dibuja
+// esos puntos tal cual, sin reagruparlos.
 
 const MONO    = 'var(--font-mono, "Space Mono", monospace)'
 const DISPLAY = 'var(--font-display, "IBM Plex Sans", sans-serif)'
@@ -85,6 +86,7 @@ const ChartTooltip = ({ active, payload, label }) => {
   )
 }
 
+const sameDay = (a, b) => format(new Date(a), 'yyyy-MM-dd') === format(new Date(b), 'yyyy-MM-dd')
 const fmtNum = (v, digits) => (v == null ? '—' : Number(v).toFixed(digits))
 
 const SeriesTooltip = ({ active, payload }) => {
@@ -103,14 +105,16 @@ const SeriesTooltip = ({ active, payload }) => {
       borderRadius: 8, padding: '8px 12px', fontSize: 11,
       fontFamily: MONO, color: 'var(--ink)', boxShadow: 'var(--shadow-panel)',
     }}>
+      {/* Grouped points: show the group's time span; values are the plotted
+          ones (maxima of the group, each with the time it happened). */}
       <div style={{ color: 'var(--ink-3)', marginBottom: 6 }}>
-        {format(new Date(d.t), 'dd/MM/yyyy HH:mm', { locale: es })}
-        {d.n > 1 && ` · ${d.n} lecturas`}
+        {d.n > 1
+          ? `${format(new Date(d.tStart), 'dd/MM/yyyy HH:mm', { locale: es })}–${format(new Date(d.tEnd), sameDay(d.tStart, d.tEnd) ? 'HH:mm' : 'dd/MM HH:mm', { locale: es })} · ${d.n} lecturas`
+          : format(new Date(d.t), 'dd/MM/yyyy HH:mm', { locale: es })}
       </div>
-      {d.nivel != null && row('var(--chart-level)', d.n > 1 ? 'Nivel prom.' : 'Nivel', `${fmtNum(d.nivel, 2)} m`)}
-      {d.n > 1 && d.nivelMax != null && row('var(--chart-level)', 'Nivel máx.', `${fmtNum(d.nivelMax, 2)} m`)}
+      {d.nivel != null && row('var(--chart-level)', d.n > 1 ? `Nivel máx. (${format(new Date(d.t), 'HH:mm')})` : 'Nivel', `${fmtNum(d.nivel, 2)} m`)}
       {d.lluvia != null && row('var(--chart-rain)', d.n > 1 ? 'Lluvia máx. 5 min' : 'Lluvia 5 min', `${fmtNum(d.lluvia, 1)} mm`)}
-      {d.acum1h != null && row('var(--chart-rain-acc)', 'Acum. 1 h', `${fmtNum(d.acum1h, 1)} mm`)}
+      {d.acum1h != null && row('var(--chart-rain-acc)', d.n > 1 ? `Lluvia Acumulada 1h máx. (${format(new Date(d.tAcum), 'HH:mm')})` : 'Lluvia Acumulada 1h', `${fmtNum(d.acum1h, 2)} mm`)}
     </div>
   )
 }
@@ -123,6 +127,16 @@ function LegendItem({ swatch, label, stat }) {
       {stat && <span style={{ fontSize: 11, color: 'var(--ink)', fontFamily: MONO, fontWeight: 600 }}>{stat}</span>}
     </div>
   )
+}
+
+// Instant-rain bars are drawn at a fixed width, centred on their time. On a
+// numeric time axis Recharts caps bar width at the smallest pixel gap between
+// points (~1.5 px for 600 points), which made them sub-pixel and invisible.
+const RAIN_BAR_PX = 4
+function RainBarShape({ x, y, width, height, fill }) {
+  if (x == null || !height) return null
+  const top = height < 0 ? y + height : y
+  return <rect x={x + width / 2 - RAIN_BAR_PX / 2} y={top} width={RAIN_BAR_PX} height={Math.abs(height)} fill={fill} rx={1} />
 }
 
 const LINE_SWATCH = color => <div style={{ width: 18, height: 2, flexShrink: 0, background: color }} />
@@ -154,12 +168,14 @@ function ChartLegend({ showRain = true, showLevel = true }) {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// /api/grafana-data acepta como máximo 31 días por consulta.
+// /api/grafana-data acepta cualquier rango dentro de la tabla (desde su
+// primera lectura); los largos llegan ya agrupados.
 const RANGE_PRESETS = [
   { key: '1d',     label: 'Últimas 24 h'    },
   { key: '7d',     label: 'Últimos 7D'      },
   { key: '14d',    label: 'Últimos 14D'     },
   { key: '30d',    label: 'Últimos 30D'     },
+  { key: 'all',    label: 'Todo el período' },
   { key: 'custom', label: 'Personalizado'   },
 ]
 const DEFAULT_RANGE = '7d'
@@ -167,62 +183,35 @@ const DEFAULT_RANGE = '7d'
 // Presets go to the route as relative values ('now-7d'), so the request URL
 // is the same on every poll and the 60 s CDN cache can serve it.
 function rangeToQuery(rangeKey, customFrom, customTo) {
+  if (rangeKey === 'all') return { from: 'inicio', to: 'now' }
   if (rangeKey === 'custom' && customFrom) {
+    // An inverted pick ("Desde" after "Hasta") is swapped instead of being
+    // sent as-is, which the route rejects with '"from" debe ser anterior a "to"'.
+    const [desde, hasta] = customTo && customTo < customFrom ? [customTo, customFrom] : [customFrom, customTo]
     return {
-      from: String(new Date(customFrom + 'T00:00:00').getTime()),
-      to:   customTo ? String(new Date(customTo + 'T23:59:59').getTime()) : 'now',
+      from: String(new Date(desde + 'T00:00:00').getTime()),
+      to:   hasta ? String(new Date(hasta + 'T23:59:59').getTime()) : 'now',
     }
   }
   const key = rangeKey === 'custom' ? DEFAULT_RANGE : rangeKey
   return { from: `now-${key}`, to: 'now' }
 }
 
-// Readings → plotted points. Above MAX_PUNTOS they are grouped into equal
-// time buckets keeping the peaks (level max, 5-min rain max, 1 h max) so the
-// bands and max marker stay truthful; gaps longer than GAP_MS get a null
-// point so the line breaks instead of bridging missing data.
-function buildChartData(puntos, fromMs, toMs) {
-  if (!puntos.length) return []
-  const bucketMs = Math.max(5 * 60 * 1000, Math.ceil((toMs - fromMs) / MAX_PUNTOS))
-  const buckets = []
-  let cur = null
-  for (const p of puntos) {
-    const idx = Math.floor((p.t - fromMs) / bucketMs)
-    if (!cur || cur.idx !== idx) {
-      cur = { idx, t: p.t, n: 0, sumNivel: 0, nNivel: 0, nivelMax: null, lluvia: null, acum1h: null }
-      buckets.push(cur)
-    }
-    cur.n++
-    if (p.nivel != null) {
-      cur.sumNivel += p.nivel; cur.nNivel++
-      cur.nivelMax = Math.max(cur.nivelMax ?? -Infinity, p.nivel)
-    }
-    if (p.lluvia != null) cur.lluvia = Math.max(cur.lluvia ?? 0, p.lluvia)
-    if (p.acum1h != null) cur.acum1h = Math.max(cur.acum1h ?? 0, p.acum1h)
-  }
+// Points from the route (already grouped server-side) → plotted points. The
+// only change is a null point wherever readings are missing for longer than
+// GAP_MS (or two buckets), so the line breaks instead of bridging the gap.
+function withGaps(puntos, bucketMs) {
   const out = []
-  let prevT = null
-  for (const b of buckets) {
-    if (prevT != null && b.t - prevT > Math.max(GAP_MS, 2 * bucketMs)) {
-      out.push({ t: prevT + 1, n: 0, nivel: null, nivelMax: null, lluvia: null, acum1h: null })
+  let prevEnd = null
+  for (const p of puntos) {
+    const start = p.tStart ?? p.t
+    if (prevEnd != null && start - prevEnd > Math.max(GAP_MS, 2 * bucketMs)) {
+      out.push({ t: prevEnd + 1, n: 0, nivel: null, lluvia: null, acum1h: null })
     }
-    out.push({
-      t: b.t, n: b.n,
-      nivel: b.nNivel ? b.sumNivel / b.nNivel : null,
-      nivelMax: b.nivelMax, lluvia: b.lluvia, acum1h: b.acum1h,
-    })
-    prevT = b.t
+    out.push(p)
+    prevEnd = p.tEnd ?? p.t
   }
   return out
-}
-
-function formatAge(ms) {
-  const min = Math.floor(ms / 60000)
-  if (min < 1)  return 'menos de 1 min'
-  if (min < 60) return `${min} min`
-  const h = Math.floor(min / 60)
-  if (h < 48)   return `${h} h ${min % 60} min`
-  return `${Math.floor(h / 24)} d ${h % 24} h`
 }
 
 // ─── Fuente Supabase (desactivada) ───────────────────────────────────────────
@@ -232,7 +221,7 @@ function formatAge(ms) {
 // seriesFromSupabase(levelData, rainData) como `puntos` en lugar de
 // useGrafanaSeries.
 
-// Pese al nombre de la columna, water_level_cm ya está en metros.
+// Pese al nombre, la columna water_level_cm de Supabase guarda METROS.
 const NIVEL_A_METROS = 1
 // La estación de lluvia reporta cada 5 min y el RPC devuelve el promedio por
 // hora, así que lo acumulado en esa hora ≈ promedio × 12.
@@ -321,25 +310,28 @@ export default function CombinedChart({ levelData, rainData, stations }) {
 
   // ── Chart data memos ────────────────────────────────────────────────────────
 
+  const lecturas = useMemo(() => puntos.reduce((sum, p) => sum + (p.n ?? 1), 0), [puntos])
+
   const fromMs = data?.from ?? null
   const toMs   = data?.to   ?? null
 
   const chartData = useMemo(
-    () => (fromMs == null ? [] : buildChartData(puntos, fromMs, toMs)),
-    [puntos, fromMs, toMs]
+    () => withGaps(puntos, (data?.bucketSeg ?? 300) * 1000),
+    [puntos, data?.bucketSeg]
   )
 
-  // Real maxima over every reading in the range (not the plotted buckets),
-  // shown in the legend and as the level max marker.
+  // Maxima of the plotted points, so the legend and the max-level marker show
+  // exactly what is drawn (grouping keeps every series' maximum, so these are
+  // also the real maxima of the range).
   const maxima = useMemo(() => {
     let level = null, rain = null, acum = null
-    for (const p of puntos) {
+    for (const p of chartData) {
       if (p.nivel != null && (level == null || p.nivel > level.value)) level = { value: p.nivel, t: p.t }
       if (p.lluvia != null && (rain == null || p.lluvia > rain)) rain = p.lluvia
       if (p.acum1h != null && (acum == null || p.acum1h > acum)) acum = p.acum1h
     }
     return { level, rain, acum }
-  }, [puntos])
+  }, [chartData])
 
   // Keep the max label inside the plot: near either edge it goes beside the
   // dot (toward the center) instead of centered above it.
@@ -368,7 +360,9 @@ export default function CombinedChart({ levelData, rainData, stations }) {
       const d = new Date(p.t)
       const key = format(d, 'yyyy-MM-dd')
       if (!byDay[key]) byDay[key] = { time: format(d, 'dd/MM/yy', { locale: es }), lluvia: 0, nivel: null }
-      if (p.lluvia != null) byDay[key].lluvia += p.lluvia
+      // lluviaSuma = total of the bucket's readings (lluvia is only its max)
+      if (p.lluviaSuma != null) byDay[key].lluvia += p.lluviaSuma
+      else if (p.lluvia != null) byDay[key].lluvia += p.lluvia
       if (p.nivel != null) byDay[key].nivel = Math.max(byDay[key].nivel ?? -Infinity, p.nivel)
     })
     return Object.keys(byDay).sort().map(key => byDay[key])
@@ -391,12 +385,11 @@ export default function CombinedChart({ levelData, rainData, stations }) {
     return [NIVEL_MIN_M, top]
   }, [maxima])
 
-  // Rain axis scales to 125% of the visible maximum, floored at 5 so the
-  // axis is never zero-height when data is absent.
-  const rainDomain = useMemo(() => {
-    const maxVal = chartData.reduce((m, d) => Math.max(m, d.lluvia ?? 0, d.acum1h ?? 0), 0)
-    return [0, Math.max(5, Math.ceil(maxVal * 1.25))]
-  }, [chartData])
+  // Fixed rain axis (see LLUVIA_MAX_MM); allowDataOverflow on the axis keeps
+  // the domain from growing and clips taller marks at the plot edge.
+  const rainDomain = [0, LLUVIA_MAX_MM]
+  // Five even steps up to the ceiling (0, 10 … 50), so the top tick is the cap.
+  const RAIN_TICKS = [0, 1, 2, 3, 4, 5].map(i => (LLUVIA_MAX_MM * i) / 5)
 
   // Station comparison — only computed when that tab is active
   const comparisonData = useMemo(() => {
@@ -525,6 +518,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
             id="chart-date-from"
             type="date"
             value={customFrom}
+            max={customTo || undefined}
             onChange={e => setCustomFrom(e.target.value)}
             style={INPUT_STYLE}
           />
@@ -534,6 +528,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
             id="chart-date-to"
             type="date"
             value={customTo}
+            min={customFrom || undefined}
             onChange={e => setCustomTo(e.target.value)}
             style={INPUT_STYLE}
           />
@@ -548,7 +543,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
         <span style={{ color: 'var(--ink-3)' }}>
           {activeTab === 'comparison'
             ? `Supabase · ${filteredLevel.length} registros nivel · ${filteredRain.length} registros lluvia`
-            : `Grafana · Colegio SIL · ${puntos.length} lecturas`}
+            : `Grafana · Colegio SIL · ${lecturas} lecturas${data?.bucketSeg > 300 ? ` · agrupadas cada ${data.bucketSeg / 3600} h (${puntos.length} puntos)` : ''}`}
         </span>
         {lastAge != null && (
           <span
@@ -634,7 +629,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
           >
             <div
               role="img"
-              aria-label={`Serie temporal de nivel y lluvia, Colegio SIL: ${puntos.length} lecturas`}
+              aria-label={`Serie temporal de nivel y lluvia, Colegio SIL: ${lecturas} lecturas`}
               className="chart-wrapper"
             >
               <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: -1, height: 1 }}>
@@ -678,6 +673,8 @@ export default function CombinedChart({ levelData, rainData, stations }) {
                       yAxisId="lluvia"
                       orientation="right"
                       domain={rainDomain}
+                      allowDataOverflow
+                      ticks={RAIN_TICKS}
                       tick={AXIS_STYLE}
                       tickLine={false}
                       axisLine={false}
@@ -711,28 +708,28 @@ export default function CombinedChart({ levelData, rainData, stations }) {
                   <Tooltip content={<SeriesTooltip />} cursor={{ stroke: 'var(--border-strong)', strokeWidth: 1 }} />
 
                   {showLluvia && (
-                    <Bar
-                      yAxisId="lluvia"
-                      dataKey="lluvia"
-                      name="Lluvia instantánea"
-                      fill="var(--chart-rain)"
-                      barSize={3}
-                      radius={[2, 2, 0, 0]}
-                      isAnimationActive={false}
-                    />
-                  )}
-
-                  {showLluvia && (
                     <Line
                       yAxisId="lluvia"
                       type="monotone"
                       dataKey="acum1h"
-                      name="Lluvia acum. 1 h"
+                      name="Lluvia Acumulada 1h (mm)"
                       stroke="var(--chart-rain-acc)"
                       strokeWidth={2}
                       dot={false}
                       activeDot={{ r: 4, fill: 'var(--chart-rain-acc)', stroke: 'var(--panel)', strokeWidth: 2 }}
                       connectNulls={false}
+                      isAnimationActive={false}
+                    />
+                  )}
+
+                  {/* Instant-rain bars after the 1 h line so they draw on top of it */}
+                  {showLluvia && (
+                    <Bar
+                      yAxisId="lluvia"
+                      dataKey="lluvia"
+                      name="Lluvia instantánea"
+                      fill="var(--chart-rain)"
+                      shape={RainBarShape}
                       isAnimationActive={false}
                     />
                   )}
@@ -796,8 +793,8 @@ export default function CombinedChart({ levelData, rainData, stations }) {
               {showLluvia && (
                 <LegendItem
                   swatch={LINE_SWATCH('var(--chart-rain-acc)')}
-                  label="Lluvia acum. 1 h (mm)"
-                  stat={`Max: ${fmtNum(maxima.acum, 1)}`}
+                  label="Lluvia Acumulada 1h (mm)"
+                  stat={`Max: ${fmtNum(maxima.acum, 2)}`}
                 />
               )}
             </div>
@@ -879,7 +876,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
                   <XAxis
                     dataKey="lluvia" name="Lluvia"
                     tick={AXIS_STYLE} tickLine={false} axisLine={false}
-                    label={{ value: 'Lluvia acum. 1 h (mm)', position: 'insideBottom', fill: 'var(--ink-3)', fontSize: 10, dy: 18 }}
+                    label={{ value: 'Lluvia Acumulada 1h (mm)', position: 'insideBottom', fill: 'var(--ink-3)', fontSize: 10, dy: 18 }}
                   />
                   <YAxis
                     dataKey="nivel" name="Nivel"
@@ -898,7 +895,7 @@ export default function CombinedChart({ levelData, rainData, stations }) {
                           fontFamily: MONO, color: 'var(--ink)',
                           boxShadow: 'var(--shadow-panel)',
                         }}>
-                          <div style={{ color: 'var(--rain)' }}>Acum. 1 h: {d.lluvia?.toFixed(1)} mm</div>
+                          <div style={{ color: 'var(--rain)' }}>Lluvia Acumulada 1h: {d.lluvia?.toFixed(2)} mm</div>
                           <div style={{ color: 'var(--level)' }}>Nivel: {d.nivel?.toFixed(2)} m</div>
                         </div>
                       )
