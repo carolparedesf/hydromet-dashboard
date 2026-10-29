@@ -9,7 +9,11 @@ import StationCards from '../components/StationCards'
 import dynamic from 'next/dynamic'
 
 const MapStation    = dynamic(() => import('../components/MapStation'),    { ssr: false })
-const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
+// Gráfico Nivel + Lluvia con datos propios de Supabase — reemplazado por el
+// panel de Grafana. Para volver a usarlo, descomentá esta línea y el bloque
+// <CombinedChart> más abajo.
+// const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
+const GrafanaPanel  = dynamic(() => import('../components/GrafanaPanel'),  { ssr: false })
 const DataTable     = dynamic(() => import('../components/DataTable'),     { ssr: false })
 
 const DATE_FROM = '2024-04-16'
@@ -409,6 +413,9 @@ export default function Home() {
         </section>
 
         <main className="main-grid">
+          <GrafanaPanel />
+
+          {/* Versión con datos de Supabase (desactivada):
           {loading
             ? <div className="skel" style={{ minHeight: 460, borderRadius: 8 }} />
             : (
@@ -427,6 +434,7 @@ export default function Home() {
               />
             )
           }
+          */}
 
           <div style={{
             background: 'var(--panel)',
