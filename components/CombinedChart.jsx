@@ -1,13 +1,37 @@
 'use client'
 
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import {
-  Line, Bar, ScatterChart, Scatter, ComposedChart,
-  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
+  Line, Bar, Area, ScatterChart, Scatter, ComposedChart,
+  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea, ReferenceDot,
   Legend, ResponsiveContainer,
 } from 'recharts'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
+import { useGrafanaSeries } from '../lib/useGrafanaSeries'
+
+// ─── Constantes editables (pestaña SERIE TEMPORAL) ──────────────────────────
+
+// Rango del eje de nivel, en metros. Si un dato supera NIVEL_MAX_M el eje se
+// extiende hasta ese dato para no recortarlo.
+const NIVEL_MIN_M = 0
+const NIVEL_MAX_M = 4
+
+// Umbrales de nivel, en metros (los mismos del panel 4 de Grafana): banda
+// naranja "Alerta" entre UMBRAL_NARANJA y UMBRAL_ROJO, roja "Crítico" encima.
+const UMBRAL_NARANJA = 2
+const UMBRAL_ROJO    = 3
+
+// Si pasa más de este tiempo sin lecturas, el indicador "último dato" se
+// pinta en color de alerta. La estación reporta cada 5 min.
+const MAX_SIN_DATOS_MS = 30 * 60 * 1000
+
+// Un hueco mayor a esto entre lecturas corta la línea en vez de unirla.
+const GAP_MS = 15 * 60 * 1000
+
+// Máximo de puntos dibujados; por encima se agrupa por intervalos de tiempo
+// conservando los picos.
+const MAX_PUNTOS = 600
 
 const MONO    = 'var(--font-mono, "Space Mono", monospace)'
 const DISPLAY = 'var(--font-display, "IBM Plex Sans", sans-serif)'
@@ -22,6 +46,15 @@ const INPUT_STYLE = {
   background: 'var(--panel)', border: '1px solid var(--border)', color: 'var(--ink)',
   borderRadius: 6, padding: '4px 8px', fontSize: 11,
   fontFamily: MONO, cursor: 'pointer', outline: 'none',
+}
+const STATE_BOX_STYLE = {
+  position: 'absolute', inset: 0, borderRadius: 6,
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+  gap: 10, padding: 16, textAlign: 'center', fontFamily: MONO, fontSize: 12,
+}
+const RETRY_BUTTON_STYLE = {
+  background: 'var(--panel)', border: '1px solid var(--border)', color: 'var(--ink-2)',
+  borderRadius: 6, padding: '4px 10px', fontSize: 11, fontFamily: MONO, cursor: 'pointer',
 }
 const AXIS_STYLE  = { fill: 'var(--ink-3)', fontSize: 10, fontFamily: MONO }
 const GRID_STYLE  = { stroke: 'var(--grid)', strokeDasharray: '3 3' }
@@ -52,6 +85,49 @@ const ChartTooltip = ({ active, payload, label }) => {
   )
 }
 
+const fmtNum = (v, digits) => (v == null ? '—' : Number(v).toFixed(digits))
+
+const SeriesTooltip = ({ active, payload }) => {
+  if (!active || !payload?.length) return null
+  const d = payload[0].payload
+  const row = (color, label, value) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />
+      <span style={{ color: 'var(--ink-2)' }}>{label}</span>
+      <strong style={{ marginLeft: 'auto', paddingLeft: 12 }}>{value}</strong>
+    </div>
+  )
+  return (
+    <div style={{
+      background: 'var(--panel)', border: '1px solid var(--border)',
+      borderRadius: 8, padding: '8px 12px', fontSize: 11,
+      fontFamily: MONO, color: 'var(--ink)', boxShadow: 'var(--shadow-panel)',
+    }}>
+      <div style={{ color: 'var(--ink-3)', marginBottom: 6 }}>
+        {format(new Date(d.t), 'dd/MM/yyyy HH:mm', { locale: es })}
+        {d.n > 1 && ` · ${d.n} lecturas`}
+      </div>
+      {d.nivel != null && row('var(--chart-level)', d.n > 1 ? 'Nivel prom.' : 'Nivel', `${fmtNum(d.nivel, 2)} m`)}
+      {d.n > 1 && d.nivelMax != null && row('var(--chart-level)', 'Nivel máx.', `${fmtNum(d.nivelMax, 2)} m`)}
+      {d.lluvia != null && row('var(--chart-rain)', d.n > 1 ? 'Lluvia máx. 5 min' : 'Lluvia 5 min', `${fmtNum(d.lluvia, 1)} mm`)}
+      {d.acum1h != null && row('var(--chart-rain-acc)', 'Acum. 1 h', `${fmtNum(d.acum1h, 1)} mm`)}
+    </div>
+  )
+}
+
+function LegendItem({ swatch, label, stat }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {swatch}
+      <span style={{ fontSize: 11, color: 'var(--ink-2)', fontFamily: MONO }}>{label}</span>
+      {stat && <span style={{ fontSize: 11, color: 'var(--ink)', fontFamily: MONO, fontWeight: 600 }}>{stat}</span>}
+    </div>
+  )
+}
+
+const LINE_SWATCH = color => <div style={{ width: 18, height: 2, flexShrink: 0, background: color }} />
+const BAR_SWATCH  = color => <div style={{ width: 8, height: 10, flexShrink: 0, background: color, borderRadius: '2px 2px 0 0' }} />
+
 // ─── Custom legend (replaces Recharts <Legend> for time-series / daily tabs)──
 
 function ChartLegend({ showRain = true, showLevel = true }) {
@@ -69,7 +145,7 @@ function ChartLegend({ showRain = true, showLevel = true }) {
       {showLevel && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <div style={{ width: 20, height: 2, flexShrink: 0, background: 'var(--level)' }} />
-          <span style={{ fontSize: 11, color: 'var(--ink-2)', fontFamily: MONO }}>Nivel (cm)</span>
+          <span style={{ fontSize: 11, color: 'var(--ink-2)', fontFamily: MONO }}>Nivel máx. (m)</span>
         </div>
       )}
     </div>
@@ -78,14 +154,104 @@ function ChartLegend({ showRain = true, showLevel = true }) {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// /api/grafana-data acepta como máximo 31 días por consulta.
 const RANGE_PRESETS = [
+  { key: '1d',     label: 'Últimas 24 h'    },
   { key: '7d',     label: 'Últimos 7D'      },
   { key: '14d',    label: 'Últimos 14D'     },
   { key: '30d',    label: 'Últimos 30D'     },
-  { key: '60d',    label: 'Últimos 60D'     },
-  { key: 'all',    label: 'Todo el período' },
   { key: 'custom', label: 'Personalizado'   },
 ]
+const DEFAULT_RANGE = '7d'
+
+// Presets go to the route as relative values ('now-7d'), so the request URL
+// is the same on every poll and the 60 s CDN cache can serve it.
+function rangeToQuery(rangeKey, customFrom, customTo) {
+  if (rangeKey === 'custom' && customFrom) {
+    return {
+      from: String(new Date(customFrom + 'T00:00:00').getTime()),
+      to:   customTo ? String(new Date(customTo + 'T23:59:59').getTime()) : 'now',
+    }
+  }
+  const key = rangeKey === 'custom' ? DEFAULT_RANGE : rangeKey
+  return { from: `now-${key}`, to: 'now' }
+}
+
+// Readings → plotted points. Above MAX_PUNTOS they are grouped into equal
+// time buckets keeping the peaks (level max, 5-min rain max, 1 h max) so the
+// bands and max marker stay truthful; gaps longer than GAP_MS get a null
+// point so the line breaks instead of bridging missing data.
+function buildChartData(puntos, fromMs, toMs) {
+  if (!puntos.length) return []
+  const bucketMs = Math.max(5 * 60 * 1000, Math.ceil((toMs - fromMs) / MAX_PUNTOS))
+  const buckets = []
+  let cur = null
+  for (const p of puntos) {
+    const idx = Math.floor((p.t - fromMs) / bucketMs)
+    if (!cur || cur.idx !== idx) {
+      cur = { idx, t: p.t, n: 0, sumNivel: 0, nNivel: 0, nivelMax: null, lluvia: null, acum1h: null }
+      buckets.push(cur)
+    }
+    cur.n++
+    if (p.nivel != null) {
+      cur.sumNivel += p.nivel; cur.nNivel++
+      cur.nivelMax = Math.max(cur.nivelMax ?? -Infinity, p.nivel)
+    }
+    if (p.lluvia != null) cur.lluvia = Math.max(cur.lluvia ?? 0, p.lluvia)
+    if (p.acum1h != null) cur.acum1h = Math.max(cur.acum1h ?? 0, p.acum1h)
+  }
+  const out = []
+  let prevT = null
+  for (const b of buckets) {
+    if (prevT != null && b.t - prevT > Math.max(GAP_MS, 2 * bucketMs)) {
+      out.push({ t: prevT + 1, n: 0, nivel: null, nivelMax: null, lluvia: null, acum1h: null })
+    }
+    out.push({
+      t: b.t, n: b.n,
+      nivel: b.nNivel ? b.sumNivel / b.nNivel : null,
+      nivelMax: b.nivelMax, lluvia: b.lluvia, acum1h: b.acum1h,
+    })
+    prevT = b.t
+  }
+  return out
+}
+
+function formatAge(ms) {
+  const min = Math.floor(ms / 60000)
+  if (min < 1)  return 'menos de 1 min'
+  if (min < 60) return `${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 48)   return `${h} h ${min % 60} min`
+  return `${Math.floor(h / 24)} d ${h % 24} h`
+}
+
+// ─── Fuente Supabase (desactivada) ───────────────────────────────────────────
+// Convierte los registros horarios de get_records_sampled (props levelData /
+// rainData de page.js) al mismo formato { t, nivel, lluvia, acum1h } que
+// devuelve /api/grafana-data. Para volver a graficar datos propios, usar
+// seriesFromSupabase(levelData, rainData) como `puntos` en lugar de
+// useGrafanaSeries.
+
+// Pese al nombre de la columna, water_level_cm ya está en metros.
+const NIVEL_A_METROS = 1
+// La estación de lluvia reporta cada 5 min y el RPC devuelve el promedio por
+// hora, así que lo acumulado en esa hora ≈ promedio × 12.
+const REGISTROS_POR_HORA = 12
+
+export function seriesFromSupabase(levelData, rainData) {
+  const byT = {}
+  const at = ts => (byT[ts] ??= { t: new Date(ts).getTime(), nivel: null, lluvia: null, acum1h: null })
+  levelData.forEach(r => {
+    if (r.water_level_cm != null) at(r.timestamp).nivel = Number(r.water_level_cm) * NIVEL_A_METROS
+  })
+  rainData.forEach(r => {
+    const p = at(r.timestamp)
+    const max = r.precipitation_max_mm ?? r.precipitation_mm
+    if (max != null) p.lluvia = Math.max(0, Number(max))
+    if (r.precipitation_mm != null) p.acum1h = Math.max(0, Number(r.precipitation_mm) * REGISTROS_POR_HORA)
+  })
+  return Object.values(byT).sort((a, b) => a.t - b.t)
+}
 
 const TABS = [
   { key: 'timeseries',  label: 'SERIE TEMPORAL'   },
@@ -100,13 +266,34 @@ const COMPARISON_COLORS = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function CombinedChart({
-  levelData, rainData, stationLevel, stationRain, stations,
-  rangeKey, customFrom, customTo,
-  onRangeChange, onCustomFromChange, onCustomToChange,
-}) {
+// levelData / rainData / stations (Supabase) only feed the COMP. ESTACIONES
+// tab; every other tab plots the Grafana series.
+export default function CombinedChart({ levelData, rainData, stations }) {
   const [activeTab, setActiveTab] = useState('timeseries')
   const [variable, setVariable]   = useState('both')
+  const showNivel  = variable !== 'lluvia'
+  const showLluvia = variable !== 'nivel'
+
+  const [rangeKey, setRangeKey]     = useState(DEFAULT_RANGE)
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo]     = useState('')
+  const onRangeChange = useCallback(key => {
+    setRangeKey(key)
+    if (key !== 'custom') { setCustomFrom(''); setCustomTo('') }
+  }, [])
+
+  const query = rangeToQuery(rangeKey, customFrom, customTo)
+  const { data, error, loading, retrying, retry } = useGrafanaSeries(query.from, query.to)
+  const puntos = useMemo(() => data?.puntos ?? [], [data])
+
+  // Ticks every 30 s so "último dato hace X" keeps aging between polls.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+  const lastAge = data?.ultimo != null ? Math.max(0, now - data.ultimo) : null
+  const isStale = lastAge != null && lastAge > MAX_SIN_DATOS_MS
 
   // Ref array for roving tabIndex focus management
   const tabRefs = useRef([])
@@ -128,37 +315,48 @@ export default function CombinedChart({
     }
   }, [])
 
-  // levelData/rainData already come from page.js scoped to the selected range
-  // (get_records_sampled is re-queried with p_from/p_to per rangeKey), so no
-  // client-side date filtering is needed here.
+  // COMP. ESTACIONES still compares the Supabase stations.
   const filteredLevel = levelData
   const filteredRain  = rainData
 
-  // ── Chart data memos (logic unchanged from previous implementation) ─────────
+  // ── Chart data memos ────────────────────────────────────────────────────────
 
-  const chartData = useMemo(() => {
-    // Se agrupa por el timestamp ISO crudo (único y ordenable cronológicamente),
-    // no por la etiqueta formateada 'dd/MM HH:mm': esa etiqueta no lleva año, así que
-    // ordenarla con .sort() da orden alfabético por día-de-mes, no orden temporal,
-    // y el muestreo por step descartaba el dato más reciente de forma arbitraria.
-    const levelMap = {}
-    filteredLevel.forEach(r => { levelMap[r.timestamp] = r.water_level_cm })
-    const rainMap = {}
-    filteredRain.forEach(r => { rainMap[r.timestamp] = r.precipitation_mm })
-    const allKeys = Array.from(new Set([...Object.keys(levelMap), ...Object.keys(rainMap)])).sort()
-    let keys = allKeys
-    if (allKeys.length > 600) {
-      const step = Math.ceil(allKeys.length / 600)
-      keys = allKeys.filter((_, i) => i % step === 0)
-      const last = allKeys[allKeys.length - 1]
-      if (keys[keys.length - 1] !== last) keys.push(last)
+  const fromMs = data?.from ?? null
+  const toMs   = data?.to   ?? null
+
+  const chartData = useMemo(
+    () => (fromMs == null ? [] : buildChartData(puntos, fromMs, toMs)),
+    [puntos, fromMs, toMs]
+  )
+
+  // Real maxima over every reading in the range (not the plotted buckets),
+  // shown in the legend and as the level max marker.
+  const maxima = useMemo(() => {
+    let level = null, rain = null, acum = null
+    for (const p of puntos) {
+      if (p.nivel != null && (level == null || p.nivel > level.value)) level = { value: p.nivel, t: p.t }
+      if (p.lluvia != null && (rain == null || p.lluvia > rain)) rain = p.lluvia
+      if (p.acum1h != null && (acum == null || p.acum1h > acum)) acum = p.acum1h
     }
-    return keys.map(k => ({
-      time: format(new Date(k), 'dd/MM HH:mm', { locale: es }),
-      nivel: levelMap[k] ?? null,
-      lluvia: rainMap[k] ?? null,
-    }))
-  }, [filteredLevel, filteredRain])
+    return { level, rain, acum }
+  }, [puntos])
+
+  // Keep the max label inside the plot: near either edge it goes beside the
+  // dot (toward the center) instead of centered above it.
+  const maxLabelPosition = useMemo(() => {
+    if (!maxima.level || fromMs == null || toMs <= fromMs) return 'top'
+    const frac = (maxima.level.t - fromMs) / (toMs - fromMs)
+    return frac > 0.8 ? 'left' : frac < 0.2 ? 'right' : 'top'
+  }, [maxima, fromMs, toMs])
+
+  // HH:MM ticks as in the reference; the date is added when the range spans
+  // more than a day and a half, otherwise the same hour on different days is
+  // ambiguous.
+  const tickFormat = useMemo(() => {
+    const span = fromMs == null ? 0 : toMs - fromMs
+    const pattern = span > 36 * 3600 * 1000 ? 'dd/MM HH:mm' : 'HH:mm'
+    return t => format(new Date(t), pattern, { locale: es })
+  }, [fromMs, toMs])
 
   const dailyData = useMemo(() => {
     if (activeTab !== 'daily') return []
@@ -166,54 +364,37 @@ export default function CombinedChart({
     // y evita que el mismo dia/mes de años distintos se sumen en la misma barra.
     // 'time' guarda la etiqueta a mostrar, separada del key de agrupacion/orden.
     const byDay = {}
-    filteredRain.forEach(r => {
-      const d = new Date(r.timestamp)
+    puntos.forEach(p => {
+      const d = new Date(p.t)
       const key = format(d, 'yyyy-MM-dd')
       if (!byDay[key]) byDay[key] = { time: format(d, 'dd/MM/yy', { locale: es }), lluvia: 0, nivel: null }
-      if (r.precipitation_mm != null) byDay[key].lluvia += Number(r.precipitation_mm)
-    })
-    filteredLevel.forEach(r => {
-      const d = new Date(r.timestamp)
-      const key = format(d, 'yyyy-MM-dd')
-      if (!byDay[key]) byDay[key] = { time: format(d, 'dd/MM/yy', { locale: es }), lluvia: 0, nivel: null }
-      if (r.water_level_cm != null)
-        byDay[key].nivel = Math.max(byDay[key].nivel || 0, Number(r.water_level_cm))
+      if (p.lluvia != null) byDay[key].lluvia += p.lluvia
+      if (p.nivel != null) byDay[key].nivel = Math.max(byDay[key].nivel ?? -Infinity, p.nivel)
     })
     return Object.keys(byDay).sort().map(key => byDay[key])
-  }, [activeTab, filteredLevel, filteredRain])
+  }, [activeTab, puntos])
 
   const scatterData = useMemo(() => {
     if (activeTab !== 'correlation') return []
-    const rainMap = {}
-    filteredRain.forEach(r => {
-      const key = format(new Date(r.timestamp), 'dd/MM HH:mm', { locale: es })
-      rainMap[key] = r.precipitation_mm
-    })
-    return filteredLevel
-      .map(r => {
-        const key = format(new Date(r.timestamp), 'dd/MM HH:mm', { locale: es })
-        return {
-          lluvia: rainMap[key] != null ? Number(rainMap[key]) : null,
-          nivel:  r.water_level_cm != null ? Number(r.water_level_cm) : null,
-        }
-      })
-      .filter(d => d.lluvia != null && d.nivel != null)
-      .slice(0, 300)
-  }, [activeTab, filteredLevel, filteredRain])
+    // Same station and timestamp for both variables, so each reading is a pair.
+    // 1 h accumulation vs level: a single 5-min reading barely relates to level.
+    const pairs = puntos.filter(p => p.acum1h != null && p.nivel != null)
+    const step = Math.max(1, Math.ceil(pairs.length / 300))
+    return pairs.filter((_, i) => i % step === 0).map(p => ({ lluvia: p.acum1h, nivel: p.nivel }))
+  }, [activeTab, puntos])
 
-  // Dynamic Y-axis domains — both scale to 125% of the visible maximum,
-  // floored at 5 so the axis is never zero-height when data is absent.
+  // Level axis: fixed NIVEL_MIN_M–NIVEL_MAX_M so the alert bands stay put,
+  // extended upward only when a value would otherwise be clipped.
   const levelDomain = useMemo(() => {
-    const vals = chartData.map(d => d.nivel).filter(v => v != null)
-    if (!vals.length) return [0, 5]
-    const maxVal = vals.reduce((a, b) => Math.max(a, b), 0)
-    return [0, Math.max(5, Math.ceil(maxVal * 1.25))]
-  }, [chartData])
+    const peak = maxima.level?.value ?? 0
+    const top = peak > NIVEL_MAX_M ? Math.ceil(peak * 1.1 * 2) / 2 : NIVEL_MAX_M
+    return [NIVEL_MIN_M, top]
+  }, [maxima])
 
+  // Rain axis scales to 125% of the visible maximum, floored at 5 so the
+  // axis is never zero-height when data is absent.
   const rainDomain = useMemo(() => {
-    const vals = chartData.map(d => d.lluvia).filter(v => v != null && v > 0)
-    if (!vals.length) return [0, 5]
-    const maxVal = vals.reduce((a, b) => Math.max(a, b), 0)
+    const maxVal = chartData.reduce((m, d) => Math.max(m, d.lluvia ?? 0, d.acum1h ?? 0), 0)
     return [0, Math.max(5, Math.ceil(maxVal * 1.25))]
   }, [chartData])
 
@@ -344,7 +525,7 @@ export default function CombinedChart({
             id="chart-date-from"
             type="date"
             value={customFrom}
-            onChange={e => onCustomFromChange(e.target.value)}
+            onChange={e => setCustomFrom(e.target.value)}
             style={INPUT_STYLE}
           />
           <span style={{ fontSize: 10, color: 'var(--ink-3)', fontFamily: MONO }}>→</span>
@@ -353,22 +534,99 @@ export default function CombinedChart({
             id="chart-date-to"
             type="date"
             value={customTo}
-            onChange={e => onCustomToChange(e.target.value)}
+            onChange={e => setCustomTo(e.target.value)}
             style={INPUT_STYLE}
           />
         </div>
       )}
 
-      {/* ── Chart metadata line ───────────────────────────────────────────── */}
-      <div style={{ padding: '6px 20px 0', fontSize: 10, color: 'var(--ink-3)', fontFamily: MONO }}>
-        {chartData.length} puntos · {filteredLevel.length} registros nivel · {filteredRain.length} registros lluvia
+      {/* ── Source + freshness line ───────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 8, flexWrap: 'wrap', padding: '8px 20px 0', fontSize: 10, fontFamily: MONO,
+      }}>
+        <span style={{ color: 'var(--ink-3)' }}>
+          {activeTab === 'comparison'
+            ? `Supabase · ${filteredLevel.length} registros nivel · ${filteredRain.length} registros lluvia`
+            : `Grafana · Colegio SIL · ${puntos.length} lecturas`}
+        </span>
+        {lastAge != null && (
+          <span
+            title={`Última lectura: ${format(new Date(data.ultimo), 'dd/MM/yyyy HH:mm', { locale: es })}`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '2px 8px', borderRadius: 4,
+              color:      isStale ? 'var(--st-alerta)'      : 'var(--ink-2)',
+              background: isStale ? 'var(--st-alerta-soft)' : 'transparent',
+              border: `1px solid ${isStale ? 'var(--st-alerta)' : 'var(--border)'}`,
+            }}
+          >
+            <span aria-hidden="true" style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: isStale ? 'var(--st-alerta)' : 'var(--st-normal)',
+            }} />
+            Último dato hace {formatAge(lastAge)}{isStale && ' · sin lecturas nuevas'}
+          </span>
+        )}
       </div>
+
+      {/* Poll failed but an earlier response is still on screen */}
+      {error && data && activeTab !== 'comparison' && (
+        <div role="alert" style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          margin: '8px 20px 0', padding: '6px 10px', borderRadius: 6,
+          background: 'var(--st-critico-soft)', border: '1px solid var(--st-critico)',
+          fontSize: 11, fontFamily: MONO, color: 'var(--st-critico)',
+        }}>
+          No se pudo actualizar desde Grafana ({error}); se muestran los últimos datos recibidos.
+          <button onClick={retry} disabled={retrying} style={RETRY_BUTTON_STYLE}>
+            {retrying ? 'Reintentando…' : 'Reintentar'}
+          </button>
+        </div>
+      )}
 
       {/* ── Chart panels ─────────────────────────────────────────────────── */}
       <div style={{ padding: '8px 12px 12px' }}>
 
+        {/* Loading / error / empty states for the Grafana-fed tabs */}
+        {activeTab !== 'comparison' && (loading || !data || !puntos.length) && (
+          <div className="chart-wrapper" style={{ position: 'relative' }}>
+            {loading && !error && (
+              <div className="skel" style={{
+                ...STATE_BOX_STYLE, color: 'var(--ink-3)',
+              }}>
+                Cargando datos de Grafana…
+              </div>
+            )}
+            {error && !data && (
+              <div role="alert" style={{
+                ...STATE_BOX_STYLE,
+                background: 'var(--st-critico-soft)', border: '1px solid var(--st-critico)',
+                color: 'var(--st-critico)',
+              }}>
+                <div>No se pudieron obtener los datos de Grafana.</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-3)', maxWidth: 440 }}>{error}</div>
+                <button onClick={retry} disabled={retrying} style={RETRY_BUTTON_STYLE}>
+                  {retrying ? 'Reintentando…' : 'Reintentar'}
+                </button>
+              </div>
+            )}
+            {data && !puntos.length && (
+              <div style={{
+                ...STATE_BOX_STYLE, border: '1px dashed var(--border)', color: 'var(--ink-2)',
+              }}>
+                <div>Sin datos en el rango seleccionado.</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  {format(new Date(data.from), 'dd/MM HH:mm', { locale: es })} → {format(new Date(data.to), 'dd/MM HH:mm', { locale: es })}
+                  {data.ultimo != null && ` · última lectura: ${format(new Date(data.ultimo), 'dd/MM/yyyy HH:mm', { locale: es })}`}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* SERIE TEMPORAL — level line (left) and rainfall bars (right), both baseline at 0 */}
-        {activeTab === 'timeseries' && (
+        {activeTab === 'timeseries' && puntos.length > 0 && (
           <section
             id="chart-panel-timeseries"
             role="tabpanel"
@@ -376,103 +634,178 @@ export default function CombinedChart({
           >
             <div
               role="img"
-              aria-label={`Serie temporal: ${filteredLevel.length} registros de nivel, ${filteredRain.length} de lluvia`}
+              aria-label={`Serie temporal de nivel y lluvia, Colegio SIL: ${puntos.length} lecturas`}
               className="chart-wrapper"
             >
               <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: -1, height: 1 }}>
-                <ComposedChart data={chartData} margin={{ top: 8, right: 48, left: 0, bottom: 0 }}>
+                <ComposedChart data={chartData} margin={{ top: 22, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid {...GRID_STYLE} vertical={false} />
 
+                  {/* Real time scale over the requested range, so data gaps and
+                      the empty tail before "now" are visible as such */}
                   <XAxis
-                    dataKey="time"
-                    tick={{ fill: 'var(--ink-3)', fontSize: 10, fontFamily: MONO }}
+                    dataKey="t"
+                    type="number"
+                    scale="time"
+                    domain={[fromMs, toMs]}
+                    allowDataOverflow
+                    tickFormatter={tickFormat}
+                    tick={AXIS_STYLE}
                     tickLine={false}
                     axisLine={{ stroke: 'var(--border-strong)' }}
                     minTickGap={48}
-                    angle={-20}
-                    textAnchor="end"
-                    height={40}
                   />
 
-                  {/* Left Y — water level, domain scales to visible data */}
-                  {(variable === 'both' || variable === 'nivel') && (
+                  {/* Left Y — water level in meters, fixed range (see NIVEL_*_M) */}
+                  {showNivel && (
                     <YAxis
                       yAxisId="nivel"
                       orientation="left"
                       domain={levelDomain}
+                      allowDataOverflow
                       tick={AXIS_STYLE}
+                      tickFormatter={v => v.toFixed(1)}
                       tickLine={false}
                       axisLine={false}
                       width={44}
-                      label={{ value: 'NIVEL · cm', angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 9, dx: -2 }}
+                      label={{ value: 'NIVEL · m', angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 9, dx: -2 }}
                     />
                   )}
 
-                  {/* Right Y — rainfall, same baseline as level (0 at bottom, bars grow up) */}
-                  {(variable === 'both' || variable === 'lluvia') && (
+                  {/* Right Y — rainfall (instant bars + 1 h accumulated line) */}
+                  {showLluvia && (
                     <YAxis
                       yAxisId="lluvia"
                       orientation="right"
                       domain={rainDomain}
-                      tick={{ fill: 'var(--rain)', fontSize: 10, fontFamily: MONO }}
+                      tick={AXIS_STYLE}
                       tickLine={false}
                       axisLine={false}
                       width={40}
-                      label={{ value: 'LLUVIA · mm', angle: 90, position: 'insideRight', fill: 'var(--rain)', fontSize: 9, dx: 6 }}
+                      label={{ value: 'LLUVIA · mm', angle: 90, position: 'insideRight', fill: 'var(--ink-3)', fontSize: 9, dx: 6 }}
                     />
                   )}
 
-                  {/* Threshold reference lines — only render when within the visible domain */}
-                  {(variable === 'both' || variable === 'nivel') && levelDomain[1] >= 50 && (
-                    <ReferenceLine yAxisId="nivel" y={50} stroke="var(--st-atencion)" strokeDasharray="4 3" strokeOpacity={0.55} strokeWidth={1} />
+                  {/* Alert bands: orange between the thresholds, red above */}
+                  {showNivel && UMBRAL_NARANJA < levelDomain[1] && (
+                    <ReferenceArea
+                      yAxisId="nivel" y1={UMBRAL_NARANJA} y2={Math.min(UMBRAL_ROJO, levelDomain[1])}
+                      fill="var(--st-alerta)" fillOpacity={0.12} stroke="none" ifOverflow="hidden"
+                      label={{ value: 'Alerta', position: 'insideTopLeft', fill: 'var(--ink-2)', fontSize: 10, fontFamily: MONO }}
+                    />
                   )}
-                  {(variable === 'both' || variable === 'nivel') && levelDomain[1] >= 100 && (
-                    <ReferenceLine yAxisId="nivel" y={100} stroke="var(--st-alerta)" strokeDasharray="4 3" strokeOpacity={0.55} strokeWidth={1} />
+                  {showNivel && UMBRAL_ROJO < levelDomain[1] && (
+                    <ReferenceArea
+                      yAxisId="nivel" y1={UMBRAL_ROJO} y2={levelDomain[1]}
+                      fill="var(--st-critico)" fillOpacity={0.14} stroke="none" ifOverflow="hidden"
+                      label={{ value: 'Crítico', position: 'insideTopLeft', fill: 'var(--ink-2)', fontSize: 10, fontFamily: MONO }}
+                    />
                   )}
-                  {(variable === 'both' || variable === 'nivel') && levelDomain[1] >= 200 && (
-                    <ReferenceLine yAxisId="nivel" y={200} stroke="var(--st-critico)" strokeDasharray="4 3" strokeOpacity={0.55} strokeWidth={1} />
+                  {showNivel && UMBRAL_NARANJA < levelDomain[1] && (
+                    <ReferenceLine yAxisId="nivel" y={UMBRAL_NARANJA} stroke="var(--st-alerta)" strokeDasharray="4 3" strokeOpacity={0.7} />
+                  )}
+                  {showNivel && UMBRAL_ROJO < levelDomain[1] && (
+                    <ReferenceLine yAxisId="nivel" y={UMBRAL_ROJO} stroke="var(--st-critico)" strokeDasharray="4 3" strokeOpacity={0.7} />
                   )}
 
-                  <Tooltip content={<ChartTooltip />} />
+                  <Tooltip content={<SeriesTooltip />} cursor={{ stroke: 'var(--border-strong)', strokeWidth: 1 }} />
 
-                  {/* Rain bars — reversed axis causes them to grow downward from y=0 (top) */}
-                  {(variable === 'both' || variable === 'lluvia') && (
+                  {showLluvia && (
                     <Bar
                       yAxisId="lluvia"
                       dataKey="lluvia"
-                      name="Lluvia (mm)"
-                      fill="var(--rain)"
-                      fillOpacity={0.85}
+                      name="Lluvia instantánea"
+                      fill="var(--chart-rain)"
                       barSize={3}
+                      radius={[2, 2, 0, 0]}
                       isAnimationActive={false}
                     />
                   )}
 
-                  {/* Level line */}
-                  {(variable === 'both' || variable === 'nivel') && (
+                  {showLluvia && (
                     <Line
+                      yAxisId="lluvia"
+                      type="monotone"
+                      dataKey="acum1h"
+                      name="Lluvia acum. 1 h"
+                      stroke="var(--chart-rain-acc)"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, fill: 'var(--chart-rain-acc)', stroke: 'var(--panel)', strokeWidth: 2 }}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                    />
+                  )}
+
+                  {/* Level: green line over a faint area */}
+                  {showNivel && (
+                    <Area
                       yAxisId="nivel"
                       type="monotone"
                       dataKey="nivel"
-                      name="Nivel (cm)"
-                      stroke="var(--level)"
-                      strokeWidth={1.7}
+                      name="Nivel"
+                      stroke="var(--chart-level)"
+                      strokeWidth={2}
+                      fill="var(--chart-level)"
+                      fillOpacity={0.12}
+                      baseValue={NIVEL_MIN_M}
                       dot={false}
-                      activeDot={{ r: 3, fill: 'var(--level)', strokeWidth: 0 }}
+                      activeDot={{ r: 4, fill: 'var(--chart-level)', stroke: 'var(--panel)', strokeWidth: 2 }}
                       connectNulls={false}
                       isAnimationActive={false}
+                    />
+                  )}
+
+                  {/* Max level marker: highest reading in the range, with value and time */}
+                  {showNivel && maxima.level && (
+                    <ReferenceDot
+                      yAxisId="nivel"
+                      x={maxima.level.t}
+                      y={maxima.level.value}
+                      r={5}
+                      fill="var(--chart-level)"
+                      stroke="var(--panel)"
+                      strokeWidth={2}
+                      ifOverflow="extendDomain"
+                      label={{
+                        value: `Máx ${maxima.level.value.toFixed(2)} m · ${tickFormat(maxima.level.t)}`,
+                        position: maxLabelPosition, offset: 8,
+                        fill: 'var(--ink)', fontSize: 10, fontFamily: MONO, fontWeight: 600,
+                      }}
                     />
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
 
-            <ChartLegend showRain={variable !== 'nivel'} showLevel={variable !== 'lluvia'} />
+            <div style={{ display: 'flex', gap: 18, padding: '8px 4px 0', alignItems: 'center', flexWrap: 'wrap' }}>
+              {showNivel && (
+                <LegendItem
+                  swatch={LINE_SWATCH('var(--chart-level)')}
+                  label="Nivel (m)"
+                  stat={`Nivel Max: ${fmtNum(maxima.level?.value, 2)}`}
+                />
+              )}
+              {showLluvia && (
+                <LegendItem
+                  swatch={BAR_SWATCH('var(--chart-rain)')}
+                  label="Lluvia instantánea (mm / 5 min)"
+                  stat={`Lluvia Max: ${fmtNum(maxima.rain, 1)}`}
+                />
+              )}
+              {showLluvia && (
+                <LegendItem
+                  swatch={LINE_SWATCH('var(--chart-rain-acc)')}
+                  label="Lluvia acum. 1 h (mm)"
+                  stat={`Max: ${fmtNum(maxima.acum, 1)}`}
+                />
+              )}
+            </div>
           </section>
         )}
 
         {/* BARRAS DIARIAS */}
-        {activeTab === 'daily' && (
+        {activeTab === 'daily' && puntos.length > 0 && (
           <section
             id="chart-panel-daily"
             role="tabpanel"
@@ -506,7 +839,7 @@ export default function CombinedChart({
                     yAxisId="nivel"
                     orientation="right"
                     tick={AXIS_STYLE} tickLine={false} axisLine={false} width={40}
-                    label={{ value: 'Nivel cm', angle: 90, position: 'insideRight', fill: 'var(--ink-3)', fontSize: 9, dx: 6 }}
+                    label={{ value: 'Nivel máx · m', angle: 90, position: 'insideRight', fill: 'var(--ink-3)', fontSize: 9, dx: 6 }}
                   />
                   <Tooltip content={<ChartTooltip />} />
                   <Bar
@@ -515,7 +848,7 @@ export default function CombinedChart({
                     isAnimationActive={false}
                   />
                   <Line
-                    yAxisId="nivel" type="monotone" dataKey="nivel" name="Nivel Max (cm)"
+                    yAxisId="nivel" type="monotone" dataKey="nivel" name="Nivel Max (m)"
                     stroke="var(--level)" strokeWidth={2}
                     dot={{ r: 3, fill: 'var(--level)', strokeWidth: 0 }}
                     connectNulls isAnimationActive={false}
@@ -529,7 +862,7 @@ export default function CombinedChart({
         )}
 
         {/* CORRELACIÓN */}
-        {activeTab === 'correlation' && (
+        {activeTab === 'correlation' && puntos.length > 0 && (
           <section
             id="chart-panel-correlation"
             role="tabpanel"
@@ -546,12 +879,12 @@ export default function CombinedChart({
                   <XAxis
                     dataKey="lluvia" name="Lluvia"
                     tick={AXIS_STYLE} tickLine={false} axisLine={false}
-                    label={{ value: 'Lluvia (mm)', position: 'insideBottom', fill: 'var(--ink-3)', fontSize: 10, dy: 18 }}
+                    label={{ value: 'Lluvia acum. 1 h (mm)', position: 'insideBottom', fill: 'var(--ink-3)', fontSize: 10, dy: 18 }}
                   />
                   <YAxis
                     dataKey="nivel" name="Nivel"
                     tick={AXIS_STYLE} tickLine={false} axisLine={false} width={44}
-                    label={{ value: 'Nivel (cm)', angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 10, dx: -2 }}
+                    label={{ value: 'Nivel (m)', angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 10, dx: -2 }}
                   />
                   <Tooltip
                     cursor={{ strokeDasharray: '3 3', stroke: 'var(--border)' }}
@@ -565,8 +898,8 @@ export default function CombinedChart({
                           fontFamily: MONO, color: 'var(--ink)',
                           boxShadow: 'var(--shadow-panel)',
                         }}>
-                          <div style={{ color: 'var(--rain)' }}>Lluvia: {d.lluvia?.toFixed(2)} mm</div>
-                          <div style={{ color: 'var(--level)' }}>Nivel: {d.nivel?.toFixed(3)} cm</div>
+                          <div style={{ color: 'var(--rain)' }}>Acum. 1 h: {d.lluvia?.toFixed(1)} mm</div>
+                          <div style={{ color: 'var(--level)' }}>Nivel: {d.nivel?.toFixed(2)} m</div>
                         </div>
                       )
                     }}

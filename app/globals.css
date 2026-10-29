@@ -26,6 +26,10 @@
   --accent-border:    rgba(28, 84, 168, 0.28);
   --level:            #1c54a8;
   --rain:             #3f8fb0;
+  /* CombinedChart serie temporal (validated: dataviz validate_palette.js) */
+  --chart-level:      #2f9e44;
+  --chart-rain:       #3d8fe0;
+  --chart-rain-acc:   #1b4fa0;
   /* status colours */
   --st-normal:        #1f8a55;
   --st-atencion:      #b07d00;
@@ -65,6 +69,9 @@
   --accent-border:    rgba(91, 155, 255, 0.30);
   --level:            #5b9bff;
   --rain:             #5cb6d6;
+  --chart-level:      #2ea043;
+  --chart-rain:       #2a5cb0;
+  --chart-rain-acc:   #5b92e0;
   /* status colours */
   --st-normal:        #36a86b;
   --st-atencion:      #d2a02c;

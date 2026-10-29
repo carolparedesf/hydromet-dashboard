@@ -9,11 +9,11 @@ import StationCards from '../components/StationCards'
 import dynamic from 'next/dynamic'
 
 const MapStation    = dynamic(() => import('../components/MapStation'),    { ssr: false })
-// Gráfico Nivel + Lluvia con datos propios de Supabase — reemplazado por el
-// panel de Grafana. Para volver a usarlo, descomentá esta línea y el bloque
-// <CombinedChart> más abajo.
-// const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
-const GrafanaPanel  = dynamic(() => import('../components/GrafanaPanel'),  { ssr: false })
+const CombinedChart = dynamic(() => import('../components/CombinedChart'), { ssr: false })
+// Panel de Grafana como imagen externa — desactivado, se usa CombinedChart con
+// datos de Supabase. Para volver a usarlo, descomentá esta línea y el
+// <GrafanaPanel /> más abajo.
+// const GrafanaPanel  = dynamic(() => import('../components/GrafanaPanel'),  { ssr: false })
 const DataTable     = dynamic(() => import('../components/DataTable'),     { ssr: false })
 
 const DATE_FROM = '2024-04-16'
@@ -242,6 +242,10 @@ export default function Home() {
             timestamp:        row.bucket,
             precipitation_mm: row.avg_precipitation,
             water_level_cm:   row.avg_level,
+            // Hourly peaks, so CombinedChart can report real maxima instead
+            // of the max of hourly averages.
+            precipitation_max_mm: row.max_precipitation,
+            water_level_max_cm:   row.max_level,
           }))
         })
         setRecords(allRecords)
@@ -413,28 +417,24 @@ export default function Home() {
         </section>
 
         <main className="main-grid">
-          <GrafanaPanel />
+          {/* <GrafanaPanel /> */}
 
-          {/* Versión con datos de Supabase (desactivada):
           {loading
             ? <div className="skel" style={{ minHeight: 460, borderRadius: 8 }} />
             : (
+              // The time series now comes from Grafana (/api/grafana-data) and
+              // CombinedChart owns its own range; levelData / rainData only feed
+              // the COMP. ESTACIONES tab. Supabase-driven range (desactivado):
+              //   rangeKey={rangeKey} customFrom={customFrom} customTo={customTo}
+              //   onRangeChange={handleRangeChange}
+              //   onCustomFromChange={setCustomFrom} onCustomToChange={setCustomTo}
               <CombinedChart
                 levelData={levelData}
                 rainData={rainData}
-                stationLevel={stationNivel?.station_name || ''}
-                stationRain={stationLluvia?.station_name || ''}
                 stations={stations}
-                rangeKey={rangeKey}
-                customFrom={customFrom}
-                customTo={customTo}
-                onRangeChange={handleRangeChange}
-                onCustomFromChange={setCustomFrom}
-                onCustomToChange={setCustomTo}
               />
             )
           }
-          */}
 
           <div style={{
             background: 'var(--panel)',
